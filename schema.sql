@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS `pump_fun_bc_mints` (
   `creator` char(44) DEFAULT NULL,
   `created_at_ms` bigint(20) unsigned DEFAULT NULL,
   `mayhem_mode` tinyint(4) DEFAULT '0',
-  `quote_mint` varchar(44) DEFAULT 'So11111111111111111111111111111111111111112' COMMENT 'валюта котировки кривой; WSOL — SOL',
+  `quote_mint` varchar(44) DEFAULT 'So11111111111111111111111111111111111111112' COMMENT 'валюта котировки кривой, WSOL — SOL',
   PRIMARY KEY (`id`),
   UNIQUE KEY `pump_fun_bc_mints_pk` (`mint`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
