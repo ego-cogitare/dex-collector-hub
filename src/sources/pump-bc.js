@@ -15,7 +15,7 @@
  *  - кривые не в SOL: все сделки (суммы в валюте котировки с её разрядностью), строка монеты — один раз за 30 мин.
  *
  * Раздача (канал pump_bc): одна запись на транзакцию — {sig, slot, ts (createdAt Triton, мс), recvTs, cuPrice, cuLimit, signers, tips,
- * create, tokenProgram, swaps: [...]}; суммы и резервы — целые BigInt как в событии; смена криейтора — запись {creatorChange: {...}}.
+ * create, tokenProgram, createData (base64 события создания с именем/символом/uri), tokens ({mint: {programId, decimals}}), swaps: [...]}; суммы и резервы — целые BigInt как в событии; смена криейтора — запись {creatorChange: {...}}.
  */
 const bs58 = require('bs58').default;
 const {deserialize} = require('borsh');
@@ -158,8 +158,13 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         const info = txInfo(t);
         const create = logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2');
         const tokenProgram = create ? detectTokenProgram(logs) : null;
+        /** для ботов: событие создания с именем/символом/uri (base64 «Program data: G3KpTd7r…», разбор — parseMetadata бота) и токены транзакции
+         *  (программа и разрядность по балансам — нужны сделкам кривых не в SOL) */
+        const createLine = create ? logs.find(l => l.startsWith('Program data: G3KpTd7r')) : null;
+        const tokens = {};
+        for (const b of [...(meta.postTokenBalances || []), ...(meta.preTokenBalances || [])]) if (b.mint && !tokens[b.mint]) tokens[b.mint] = {programId: b.programId || null, decimals: b.uiTokenAmount ? Number(b.uiTokenAmount.decimals) : null};
         publish('pump_bc', {sig: txSig, slot, ts: createdAt, recvTs, cuPrice: info.cuPrice, cuLimit: info.cuLimit, signers: signatures.length, tips: info.tips,
-            create, tokenProgram, swaps});
+            create, tokenProgram, createData: createLine ? createLine.slice(14) : null, tokens, swaps});
         if (!db || !write) return;
         const last = swaps[swaps.length - 1];
 

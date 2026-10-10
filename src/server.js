@@ -2,8 +2,9 @@
  * Раздача разобранных сделок по TCP (TCP_NODELAY, постоянное соединение на клиента).
  *
  * Протокол.
- *  Клиент → хаб: одна строка JSON с '\n' — {"hello": 1, "name": "micro-02-low", "channels": ["pump_bc"], "resume": {"pump_bc": 123456}}
- *    channels — какие каналы нужны (CHANNELS ниже); resume — последний полученный номер канала: хаб досылает пропущенное из кольца (HUB_RING записей),
+ *  Клиент → хаб: одна строка JSON с '\n' — {"hello": 1, "name": "micro-02-low", "subscribe": {"pump": {"bc": true, "mayhem": false, "quotes": ["SOL"]}}, "resume": {"pump_bc": 123456}}
+ *    subscribe — пулы и условия (src/filters.js); старое "channels": [...] — каналы целиком (CHANNELS ниже);
+ *    resume — последний полученный номер канала: хаб досылает пропущенное из кольца (HUB_RING записей, с фильтром клиента),
  *    если номера уже нет в кольце — шлёт кадр gap и продолжает с текущего.
  *  Хаб → клиент: кадры [u32 LE длина остатка][u8 тип][u8 канал][u64 LE номер][тело msgpack]
  *    тип 1 — данные (тело — запись канала), 2 — служебный (тело: {welcome}/{gap}/{ping}); номер — сквозной в канале, растёт на 1.
@@ -14,6 +15,7 @@
 const net = require('net');
 const {Packr} = require('msgpackr');
 const {logger} = require('./common');
+const {compile} = require('./filters');
 
 /** каналы: номер в кадре ↔ имя (номера фиксированы, клиент знает их из welcome) */
 const CHANNELS = ['_ctl', 'pump_bc', 'pump_amm', 'pump_amm_pool', 'launchlab', 'launchlab_pool', 'meteora_dbc', 'meteora_dbc_pool', 'meteora_dbc_complete'];
@@ -44,18 +46,21 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
             const nl = buf.indexOf('\n'); if (nl < 0) { if (buf.length > 65536) sock.destroy(); return; }
             let hello; try { hello = JSON.parse(buf.slice(0, nl)); } catch (e) { sock.destroy(); return; }
             c.name = String(hello.name || c.addr).slice(0, 64);
-            for (const ch of hello.channels || []) if (CH_ID[ch] > 0) c.subs.add(CH_ID[ch]);
-            sock.write(frame(2, 0, 0, {welcome: {channels: CHANNELS, subscribed: [...c.subs].map(i => CHANNELS[i])}}));
+            c.filters = new Map();
+            if (hello.subscribe) { try { for (const [ch, f] of compile(hello.subscribe)) c.filters.set(CH_ID[ch], f); } catch (e) { logger.warn(`клиент ${c.name}: фильтры ${e.message}`); } }
+            for (const ch of hello.channels || []) if (CH_ID[ch] > 0) c.filters.set(CH_ID[ch], r => r);
+            for (const id of c.filters.keys()) c.subs.add(id);
+            sock.write(frame(2, 0, 0, {welcome: {channels: CHANNELS, subscribed: [...c.subs].map(i => CHANNELS[i]), subscribe: hello.subscribe || null}}));
             /** дозапрос из кольца */
             for (const [name, last] of Object.entries(hello.resume || {})) {
                 const id = CH_ID[name]; if (!c.subs.has(id)) continue;
                 const r = rings[id], from = Number(last) + 1;
                 if (!r.length || from > seq[id]) continue;
                 if (from < r[0][0]) sock.write(frame(2, id, seq[id], {gap: {channel: name, from, firstAvailable: r[0][0]}}));
-                for (const [n, b] of r) if (n >= from) sock.write(b);
+                for (const [n, b, rec] of r) if (n >= from) { const out = c.filters.get(id)(rec); if (out) sock.write(out === rec ? b : frame(1, id, n, out)); }
             }
             c.ready = true; clients.add(c); stats.clientsTotal++;
-            logger.info(`клиент ${c.name} (${c.addr}) подписан: ${[...c.subs].map(i => CHANNELS[i]).join(', ')}`);
+            logger.info(`клиент ${c.name} (${c.addr}) подписан: ${[...c.subs].map(i => CHANNELS[i]).join(', ')}${hello.subscribe ? ' ' + JSON.stringify(hello.subscribe) : ''}`);
         });
         const bye = why => { if (clients.delete(c)) logger.info(`клиент ${c.name} отключён (${why}), отправлено ${c.sent}`); };
         sock.on('close', () => bye('закрыт'));
@@ -69,12 +74,14 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
     function publish(channel, record) {
         const id = CH_ID[channel]; if (!id) return;
         const n = ++seq[id], b = frame(1, id, n, record);
-        const r = rings[id]; r.push([n, b]); if (r.length > ring) r.shift();
+        const r = rings[id]; r.push([n, b, record]); if (r.length > ring) r.shift();
         stats.published++;
         for (const c of clients) {
-            if (!c.subs.has(id)) continue;
+            const f = c.filters.get(id); if (!f) continue;
+            const out = f(record); if (!out) continue;
             if (c.sock.writableLength > maxBuf) { stats.dropped++; logger.warn(`клиент ${c.name} отстал (${(c.sock.writableLength / 1048576).toFixed(0)} МБ в буфере) — отключаю`); c.sock.destroy(); clients.delete(c); continue; }
-            c.sock.write(b); c.sent++; stats.bytes += b.length;
+            const fb = out === record ? b : frame(1, id, n, out);
+            c.sock.write(fb); c.sent++; stats.bytes += fb.length;
         }
     }
     return {publish, stats, clients, seq, close: () => new Promise(r => server.close(r))};

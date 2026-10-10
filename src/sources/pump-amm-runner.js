@@ -115,7 +115,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         }
         const r = amm.decode(d.transaction.transaction, meta, poolInfo);
         for (const p of r.pools) {
-            const a = activate(p.pool, {mint: p.mint, quote_mint: p.quote_mint, createdAt: meta.ts, migrationSig: p.signature});
+            const a = activate(p.pool, {mint: p.mint, quote_mint: p.quote_mint, is_mayhem: p.is_mayhem, createdAt: meta.ts, migrationSig: p.signature});
             if (!a) continue;
             pools.push(p); stats.migrations++;
             a.fallbackTimer = setTimeout(() => startBackfill(p.pool, {until: p.signature, delay: 0, why: 'fallback'}), FALLBACK_MS);
@@ -126,7 +126,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             const key = `${s.signature}:${s.ev_index}`;   // как уникальный ключ в MySQL
             if (a.seen.has(key)) continue;
             a.seen.add(key);
-            swaps.push({...s, src});
+            swaps.push({...s, src, is_mayhem: a.is_mayhem});   // is_mayhem — для фильтра раздачи, в MySQL не пишется
             stats.swaps++; if (src) { stats.backfilled++; bfWhy[why] = (bfWhy[why] || 0) + 1; }
             /** первая сделка из потока: пропущенное — между миграцией и ней */
             if (src === 0 && !a.backfill) startBackfill(s.pool, {until: a.migrationSig, before: s.signature, delay: CONFIRM_MS, why: 'new'});
@@ -225,9 +225,9 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         }, 5000);
     };
 
-    function activate(pool, {mint, quote_mint, createdAt, migrationSig, lastSig}) {
+    function activate(pool, {mint, quote_mint, is_mayhem = null, createdAt, migrationSig, lastSig}) {
         if (active.has(pool) || createdAt + WINDOW_MS <= Date.now()) return null;
-        const a = {mint, quote_mint, until: createdAt + WINDOW_MS, seen: new Set(), sigs: new Set(), migrationSig, lastSig, backfill: null};
+        const a = {mint, quote_mint, is_mayhem, until: createdAt + WINDOW_MS, seen: new Set(), sigs: new Set(), migrationSig, lastSig, backfill: null};
         active.set(pool, a);
         refresh();
         return a;
@@ -236,13 +236,13 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     /** после перезапуска: пулы моложе окна из базы, дотягивание после самой свежей (по слоту) записанной сделки или с миграции.
      *  Последняя по id строка не годится: это может быть дотянутая старая сделка — граница ушла бы в прошлое и всё после неё
      *  скачалось бы повторно (так появлялись дубли). Подписи записанных сделок последних ~150 слотов — в sigs: повторно не запрашиваются. */
-    const [rows] = await db.query(`SELECT p.pool, p.mint, p.quote_mint, p.created_at_ms, p.signature,
+    const [rows] = await db.query(`SELECT p.pool, p.mint, p.quote_mint, p.is_mayhem, p.created_at_ms, p.signature,
             (SELECT s.signature FROM lp_pump_amm_swaps s WHERE s.pool = p.pool ORDER BY s.slot DESC, s.id DESC LIMIT 1) last_sig,
             (SELECT MAX(s.slot) FROM lp_pump_amm_swaps s WHERE s.pool = p.pool) last_slot
         FROM lp_pump_amm_pools p WHERE p.created_at_ms > ?`, [Date.now() - WINDOW_MS]);
     const restored = [];
     for (const r of rows) {
-        const a = activate(r.pool, {mint: r.mint, quote_mint: r.quote_mint, createdAt: Number(r.created_at_ms), migrationSig: r.signature, lastSig: r.last_sig});
+        const a = activate(r.pool, {mint: r.mint, quote_mint: r.quote_mint, is_mayhem: r.is_mayhem, createdAt: Number(r.created_at_ms), migrationSig: r.signature, lastSig: r.last_sig});
         if (!a) continue;
         a.backfill = true;
         if (r.last_slot) {

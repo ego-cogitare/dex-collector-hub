@@ -2,10 +2,11 @@
  * Клиент хаба для ботов: подключение, подписка на каналы, переподключение с дозапросом пропущенного (resume), контроль номеров.
  *
  *   const {HubClient} = require('sol-collector-hub/client/hub-client');
- *   const hub = new HubClient({host: '10.156.0.17', port: 7710, name: 'micro-02-low', channels: ['pump_bc']});
+ *   const hub = new HubClient({host: '10.156.0.17', port: 7710, name: 'micro-02-low',
+ *       subscribe: {pump: {bc: true, amm: false, mayhem: false, quotes: ['SOL']}}});   // условия — src/filters.js
  *   hub.on('pump_bc', (rec, seq) => { ... });   // запись канала (поля — как публикует хаб: src/sources/*)
  *   hub.on('gap', g => ...);                      // пропуск, который хаб не смог дослать (кольцо переполнено)
- *   hub.on('down', ms => ...);                    // хаба нет дольше silenceMs — бот может переключиться на прямую подписку
+ *   hub.on('down', ms => ...);                    // хаба нет дольше silenceMs: бот не входит в новые позиции, клиент сам переподключается
  *   hub.on('up', () => ...);
  *   hub.connect();
  */
@@ -16,9 +17,9 @@ const {Unpackr} = require('msgpackr');
 const unpackr = new Unpackr({useRecords: false, int64AsType: 'bigint'});
 
 class HubClient extends EventEmitter {
-    constructor({host, port = 7710, name = 'bot', channels = [], silenceMs = 2000, retryMs = 500} = {}) {
+    constructor({host, port = 7710, name = 'bot', subscribe = null, channels = [], silenceMs = 2000, retryMs = 500} = {}) {
         super();
-        Object.assign(this, {host, port, name, channels, silenceMs, retryMs});
+        Object.assign(this, {host, port, name, subscribe, channels, silenceMs, retryMs});
         this.last = {};            // канал → последний номер
         this.names = null;         // номер канала → имя (из welcome)
         this.lastData = Date.now(); this.down = false; this.stopped = false;
@@ -32,7 +33,7 @@ class HubClient extends EventEmitter {
         const sock = this.sock = net.connect({host: this.host, port: this.port});
         sock.setNoDelay(true);
         let buf = Buffer.alloc(0);
-        sock.on('connect', () => sock.write(JSON.stringify({hello: 1, name: this.name, channels: this.channels, resume: this.last}) + '\n'));
+        sock.on('connect', () => sock.write(JSON.stringify({hello: 1, name: this.name, subscribe: this.subscribe, channels: this.channels, resume: this.last}) + '\n'));
         sock.on('data', d => {
             this.lastData = Date.now();
             if (this.down) { this.down = false; this.emit('up'); }

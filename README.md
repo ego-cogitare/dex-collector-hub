@@ -13,7 +13,7 @@
 
 | Канал | Что приходит | Откуда (перенесено) |
 |---|---|---|
-| `pump_bc` | одна запись на транзакцию pump.fun кривой: `{sig, slot, ts, recvTs, cuPrice, cuLimit, signers, tips, create, tokenProgram, swaps: [...]}`; смена криейтора — `{sig, slot, ts, recvTs, creatorChange}` | `bot/utils.js` (разбор), `sandbox/trader.js` (запись) |
+| `pump_bc` | одна запись на транзакцию pump.fun кривой: `{sig, slot, ts, recvTs, cuPrice, cuLimit, signers, tips, create, tokenProgram, createData, tokens, swaps: [...]}`; смена криейтора — `{sig, slot, ts, recvTs, creatorChange}` | `bot/utils.js` (разбор), `sandbox/trader.js` (запись) |
 | `pump_amm` | сделка PumpSwap в пулах, мигрировавших с кривой, первые 60 мин | `collectors/pump-amm.js`, `collectors/amm-run.js` |
 | `pump_amm_pool` | новый пул миграции | там же |
 | `launchlab`, `launchlab_pool` | сделки и пулы Raydium LaunchLab | `collectors/launchlab.js` |
@@ -40,7 +40,17 @@ TCP, `TCP_NODELAY`, одно соединение на бота.
 
 Отставший клиент (буфер сокета больше `HUB_MAX_CLIENT_BUF_MB`) отключается, остальных он не тормозит.
 
-Клиент для ботов — `client/hub-client.js` (переподключение, дозапрос, контроль номеров, событие `down` при тишине — бот может переключиться на прямую подписку Triton).
+Клиент для ботов — `client/hub-client.js` (переподключение, дозапрос, контроль номеров, события `down`/`up` при тишине хаба). Боты Triton не слушают — только хаб.
+
+### Фильтры подписки (`subscribe`)
+
+```json
+{"pump": {"bc": true, "amm": true, "mayhem": false, "quotes": ["SOL", "pumpCm…"], "creatorChange": true, "pools": true},
+ "launchlab": {"quotes": [...], "platforms": [...], "pools": true},
+ "meteora_dbc": {"quotes": [...], "configs": [...], "pools": true, "completes": true}}
+```
+
+`mayhem`: `true` — включать (по умолчанию), `false` — исключать, `"only"` — только mayhem. `quotes` — контракты валют котировки, SOL — `"SOL"`. Нет ключа — без ограничения. Подробно — `src/filters.js`.
 
 ## Запуск
 
