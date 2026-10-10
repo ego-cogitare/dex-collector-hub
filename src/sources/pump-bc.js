@@ -155,7 +155,15 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         const slot = Number(data.transaction.slot);
         stats.tx++;
         const cc = parseCreatorChange(logs);
-        if (cc) { stats.creatorChanges++; publish('pump_bc', {sig: bs58.encode(t.signature), slot, ts: createdAt, recvTs, creatorChange: cc}); return; }
+        if (cc) {
+            stats.creatorChanges++;
+            const sig = bs58.encode(t.signature);
+            publish('pump_bc', {sig, slot, ts: createdAt, recvTs, creatorChange: cc});
+            /** смена криейтора кривой (почти всегда — разделение комиссий pfee… в первые 2 с после создания) */
+            if (db && write) db.query('INSERT IGNORE INTO pump_fun_bc_creator_changes(mint, old_creator, new_creator, slot, ts, signature) VALUES (?, ?, ?, ?, ?, ?)',
+                [cc.mint, cc.old_creator, cc.new_creator, slot, createdAt, sig]).catch(e => logger.error('pump_fun_bc_creator_changes', e.message));
+            return;
+        }
         let swaps;
         const txSig = bs58.encode(t.signature);
         try { swaps = parseLogs(logs, txSig); } catch (e) { stats.skipped++; return; }

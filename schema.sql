@@ -262,3 +262,17 @@ CREATE TABLE IF NOT EXISTS `pump_fun_funding` (
   PRIMARY KEY (`id`),
   KEY `pump_fun_funding_mint` (`mint`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- ===== Смена криейтора кривой pump.fun (MigrateBondingCurveCreator; с 10.10 почти всегда — конфигурация разделения комиссий pfee…) =====
+CREATE TABLE IF NOT EXISTS `pump_fun_bc_creator_changes` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `mint` char(44) CHARACTER SET latin1 NOT NULL,
+  `old_creator` char(44) CHARACTER SET latin1 NOT NULL,
+  `new_creator` char(44) CHARACTER SET latin1 NOT NULL,
+  `slot` bigint(20) unsigned NOT NULL,
+  `ts` bigint(20) unsigned NOT NULL,
+  `signature` char(88) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `pump_fun_bc_creator_changes_sig_mint` (`signature`, `mint`),
+  KEY `pump_fun_bc_creator_changes_mint` (`mint`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
