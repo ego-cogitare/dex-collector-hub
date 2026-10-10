@@ -250,3 +250,15 @@ CREATE TABLE IF NOT EXISTS `pump_fun_bc_meta` (
   `data` json DEFAULT NULL,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- ===== Фандинг кошельков новых монет (src/sources/pump-funding.js; раньше писал трейдер с FETCH_FUNDING_HISTORY=1), выгружается в swaps/funding.duckdb =====
+CREATE TABLE IF NOT EXISTS `pump_fun_funding` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `mint` char(44) DEFAULT NULL,
+  `wallet` char(44) DEFAULT NULL,
+  `t0` bigint(20) DEFAULT NULL,
+  `traced_at` bigint(20) DEFAULT NULL,
+  `data` json NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `pump_fun_funding_mint` (`mint`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;

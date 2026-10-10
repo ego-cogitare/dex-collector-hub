@@ -1,6 +1,6 @@
 # sol-collector-hub
 
-Единая точка между Triton (Yellowstone gRPC) и нашими ботами на Solana (плюс сбор BNB Chain — Four.meme, Flap.sh):
+Единая точка между Triton (Yellowstone gRPC) и нашими ботами на Solana (плюс сбор BNB Chain — Four.meme, Flap.sh), метадаты и фандинга монет pump.fun:
 
 - **одна подписка** Triton на все площадки, которые мы собираем (pump.fun bonding curve, pump.fun AMM, Raydium LaunchLab, Meteora DBC);
 - **разбор** сделок, пулов и событий;
@@ -27,6 +27,7 @@
 ### Что пишется в MySQL (`DB_WRITE=1`)
 
 - `pump_fun_bc_swaps`, `pump_fun_bc_mints` — правила трейдера: SOL-кривые 185 с после создания монеты, mayhem — 10 мин, кривые не в SOL — все сделки;
+- `pump_fun_funding` — фандинг криейтора (первых покупателей) монет SOL, не mayhem, у которых больше 15 сделок — трассировщик Helius, как у трейдера с FETCH_FUNDING_HISTORY=1 (канала нет);
 - `pump_fun_bc_meta` — метадата монет (SOL, не mayhem), как писал трейдер с LOG_META=1;
 - `four_meme_bc_swaps/tokens`, `flap_bc_swaps/tokens` — как у `node/bsc` (INSERT IGNORE по tx_hash+log_index, при реорганизации — DELETE);
 - `lp_pump_amm_swaps/pools`, `lp_launchlab_swaps/pools`, `lp_meteora_dbc_swaps/pools/completes` — как у `collectors/`.

@@ -1,5 +1,6 @@
 /**
  * sol-collector-hub: единая точка между Triton (Yellowstone gRPC) и ботами.
+ *  - фандинг кошельков новых монет (Helius) → pump_fun_funding;
  *  - метадата новых монет pump.fun (IPFS) → канал meta и pump_fun_bc_meta;
  *  - BNB Chain: Four.meme и Flap.sh по websocket (src/sources/bsc/);
  *  - один поток gRPC по программам площадок (pump.fun кривая, Raydium LaunchLab, Meteora DBC) + поток pump.fun AMM (миграции и пулы первые 60 мин);
@@ -18,7 +19,7 @@ const {createServer} = require('./server');
 const {createPumpBc} = require('./sources/pump-bc');
 logger.level = process.env.LOG_LEVEL || 'info';
 
-const SOURCES = (process.env.SOURCES || 'pump_bc,pump_amm,launchlab,meteora_dbc,blockhash,bsc,meta').split(',').map(s => s.trim()).filter(Boolean);
+const SOURCES = (process.env.SOURCES || 'pump_bc,pump_amm,launchlab,meteora_dbc,blockhash,bsc,meta,funding').split(',').map(s => s.trim()).filter(Boolean);
 const WRITE = process.env.DB_WRITE !== '0';
 const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./sources/meteora-dbc')};
 
@@ -30,7 +31,14 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
     const hub = createServer();
     /** метадата: по записи создания монеты из pump_bc (источник meta требует pump_bc) */
     const meta = SOURCES.includes('meta') ? require('./sources/pump-meta').createPumpMeta({db, write: WRITE, publish: hub.publish}) : null;
-    const publish = meta ? (ch, r) => { hub.publish(ch, r); if (ch === 'pump_bc' && r.create) meta.onCreate(r); } : hub.publish;
+    /** фандинг: по записям pump_bc (создание и сделки), только запись в pump_fun_funding */
+    const funding = SOURCES.includes('funding') ? require('./sources/pump-funding').createPumpFunding({db, write: WRITE}) : null;
+    const publish = meta || funding ? (ch, r) => {
+        hub.publish(ch, r);
+        if (ch !== 'pump_bc') return;
+        if (meta && r.create) meta.onCreate(r);
+        if (funding) funding.onRecord(r);
+    } : hub.publish;
 
     /** площадки на общем потоке */
     const lag = [];   // createdAt Triton → приход, мс (за минуту)
@@ -79,7 +87,8 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         const s = [...lag].sort((a, b) => a - b); lag.length = 0; const q = p => s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null;
         logger.info({hub: {lagMs: {p50: q(.5), p90: q(.9), p99: q(.99), max: s.at(-1) ?? null, n: s.length}, cpuPct: +((cpu.user + cpu.system) / 1000 / wall * 100).toFixed(1),
             eventLoopP99Ms: +(el.percentile(99) / 1e6).toFixed(2), publishedMin: hub.stats.published - pub0, mbOutMin: +((hub.stats.bytes - bytes0) / 1048576).toFixed(1),
-            clients: [...hub.clients].map(c => `${c.name}:${[...c.subs].length}`), pump_bc: bc && {...bc.stats}, blockhash: bh && {...bh.stats}, meta: meta && Object.entries(meta.stats).map(([k, v]) => `${k}=${v}`).join(' '),
+            clients: [...hub.clients].map(c => `${c.name}:${[...c.subs].length}`), pump_bc: bc && {...bc.stats}, blockhash: bh && {...bh.stats}, funding: funding && Object.entries(funding.stats()).filter(([, v]) => typeof v !== 'object').map(([k, v]) => `${k}=${v}`).join(' '),
+            meta: meta && Object.entries(meta.stats).map(([k, v]) => `${k}=${v}`).join(' '),
             bsc: bsc && Object.entries(bsc).map(([n, x]) => `${n} ${Object.entries(x.stats).map(([k, v]) => `${k}=${v}`).join(' ')}`).join('; '),
             lp: Object.fromEntries(Object.entries(P).map(([n, p]) => [n, {...p.stats, written: p.swaps.written}]))}});
         el.reset(); pub0 = hub.stats.published; bytes0 = hub.stats.bytes;
@@ -90,7 +99,7 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         if (exiting) return; exiting = true;
         logger.warn(`выход (${sig}), дописываю буферы`);
         if (stream) stream.stop();
-        await Promise.race([Promise.all([bc && bc.close(), ...Object.values(P).flatMap(p => [p.swaps.close(), p.pools.close(), p.completes && p.completes.close()]), amm && amm.stop(),
+        await Promise.race([Promise.all([bc && bc.close(), ...Object.values(P).flatMap(p => [p.swaps.close(), p.pools.close(), p.completes && p.completes.close()]), amm && amm.stop(), funding && funding.close(),
             ...(bsc ? Object.values(bsc).map(x => x.stop()) : [])]),
             new Promise(r => setTimeout(r, 5000))]);
         await db.end().catch(() => {});
