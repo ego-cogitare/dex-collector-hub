@@ -12,7 +12,7 @@ const PING_INTERVAL = 15_000;
 const RECONNECT_DELAY = 1000;
 const RPC_TIMEOUT = 10_000;
 
-const getLogger = name => log4js.getLogger(`[bsc:${name}]`);
+const getLogger = name => { const l = log4js.getLogger(`[bsc:${name}]`); l.level = process.env.LOG_LEVEL || 'info'; return l; };
 
 /** JSON-RPC по HTTP (BSC_RPC_URL), отдельно от websocket подписки */
 async function rpcCall(method, params) {

@@ -77,7 +77,7 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         logger.info({hub: {lagMs: {p50: q(.5), p90: q(.9), p99: q(.99), max: s.at(-1) ?? null, n: s.length}, cpuPct: +((cpu.user + cpu.system) / 1000 / wall * 100).toFixed(1),
             eventLoopP99Ms: +(el.percentile(99) / 1e6).toFixed(2), publishedMin: hub.stats.published - pub0, mbOutMin: +((hub.stats.bytes - bytes0) / 1048576).toFixed(1),
             clients: [...hub.clients].map(c => `${c.name}:${[...c.subs].length}`), pump_bc: bc && {...bc.stats}, blockhash: bh && {...bh.stats},
-            bsc: bsc && Object.fromEntries(Object.entries(bsc).map(([n, x]) => [n, {...x.stats}])),
+            bsc: bsc && Object.entries(bsc).map(([n, x]) => `${n} ${Object.entries(x.stats).map(([k, v]) => `${k}=${v}`).join(' ')}`).join('; '),
             lp: Object.fromEntries(Object.entries(P).map(([n, p]) => [n, {...p.stats, written: p.swaps.written}]))}});
         el.reset(); pub0 = hub.stats.published; bytes0 = hub.stats.bytes;
     }, 60000);
