@@ -88,6 +88,12 @@ function parseCreatorChange(logs) {
             if (!m) continue;
             const buf = Buffer.from(m[1], 'base64');
             if (buf.subarray(0, 8).toString('hex') !== DISC_CREATOR_CHANGE) continue;
+            /** с ~10.10 событие длиннее (176 байт): timestamp i64, mint, bonding_curve, sharing_config, old_creator, new_creator;
+             *  старое (136): mint, ?, new_creator, old_creator. Новая раскладка по старым смещениям давала чужой mint — смена пропускалась */
+            if (buf.length >= 176) {
+                const k = o => bs58.encode(buf.subarray(o, o + 32));
+                return {mint: k(16), old_creator: k(112), new_creator: k(144)};
+            }
             const d = deserialize(CREATOR_CHANGE_STRUCT, buf);
             return {mint: bs58.encode(d.mint), old_creator: bs58.encode(d.old_creator), new_creator: bs58.encode(d.new_creator)};
         }
