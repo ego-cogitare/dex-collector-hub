@@ -51,7 +51,8 @@ class HubClient extends EventEmitter {
                 const name = this.names ? this.names[ch] : String(ch);
                 const prev = this.last[name];
                 if (prev !== undefined && seq <= prev) continue;                       // повтор после дозапроса
-                if (prev !== undefined && seq !== prev + 1) this.emit('gap', {channel: name, from: prev + 1, to: seq - 1});
+                /** разрыв номеров — не потеря: номер сквозной по каналу, а записи, не прошедшие фильтр клиента, хаб не шлёт;
+                 *  внутри соединения TCP ничего не теряет, при переподключении настоящий пропуск хаб сообщает кадром gap */
                 this.last[name] = seq;
                 this.emit(name, body, seq);
             }
