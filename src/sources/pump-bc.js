@@ -10,6 +10,7 @@
  *  - SOL-кривые: строка монеты при создании (CreateV2 + InitializeMint2), её сделки — PUMP_BC_SOL_WINDOW_MS (185 с) после создания;
  *    окно закрывается раньше, если первая сделка монеты — продажа (после 4-й сделки, как в трейдере); дубль — ключ подпись:vsr:user:amountSol;
  *    цена price_sol — по последней сделке транзакции, монета — последней сделки транзакции (как sage в трейдере);
+ *    подпись — всегда подпись транзакции (исправлено относительно трейдера, см. parseLogs);
  *  - mayhem: монета, создание которой видели, и её сделки PUMP_BC_MAYHEM_WINDOW_MS (10 мин);
  *  - кривые не в SOL: все сделки (суммы в валюте котировки с её разрядностью), строка монеты — один раз за 30 мин.
  *
@@ -57,8 +58,10 @@ function parseTrade(buffer) {
         ix_name: d.ix_name, mayhem_mode: d.mayhem_mode, cashback_fee_basis_points: d.cashback_fee_basis_points, cashback: d.cashback};
 }
 
-/** buildLoggedTransaction (только pump.fun BC): последний лог — success, события «vdt/007mYe…», в логах есть программа Token*; иначе null */
-function parseLogs(logs, signatures) {
+/** buildLoggedTransaction (только pump.fun BC): последний лог — success, события «vdt/007mYe…», в логах есть программа Token*; иначе null.
+ *  Подпись каждой сделки — подпись транзакции (txSig). В bot/utils.js при нескольких подписантах событию i доставалась signatures[i]
+ *  (подпись i-го подписанта, i — по всем событиям вместе с AMM), а при событиях больше, чем подписантов, транзакция терялась целиком (10.10, сверка хаба). */
+function parseLogs(logs, txSig) {
     if (!logs.length || !/^Program\s\S+\ssuccess$/.test(logs[logs.length - 1])) return null;
     let tokenProgram = null; const data = [];
     for (const l of logs) {
@@ -69,10 +72,9 @@ function parseLogs(logs, signatures) {
     if (!data.length || !tokenProgram) return null;
     const out = [];
     for (let i = 0; i < data.length; i++) {
-        const sign = signatures.length === 1 ? signatures[0] : signatures[i];
         const buf = Buffer.from(data[i], 'base64');
         if (buf.subarray(0, 8).toString('hex') !== DISC_TRADE) continue;
-        out.push({signature: typeof sign === 'string' ? sign : bs58.encode(sign), ...parseTrade(buf)});
+        out.push({signature: txSig, ...parseTrade(buf)});
     }
     return out.length ? out : null;
 }
@@ -149,13 +151,14 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         const cc = parseCreatorChange(logs);
         if (cc) { stats.creatorChanges++; publish('pump_bc', {sig: bs58.encode(t.signature), slot, ts: createdAt, recvTs, creatorChange: cc}); return; }
         let swaps;
-        try { swaps = parseLogs(logs, signatures); } catch (e) { stats.skipped++; return; }
+        const txSig = bs58.encode(t.signature);
+        try { swaps = parseLogs(logs, txSig); } catch (e) { stats.skipped++; return; }
         if (!swaps) { stats.skipped++; return; }
         stats.swaps += swaps.length;
         const info = txInfo(t);
         const create = logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2');
         const tokenProgram = create ? detectTokenProgram(logs) : null;
-        publish('pump_bc', {sig: bs58.encode(t.signature), slot, ts: createdAt, recvTs, cuPrice: info.cuPrice, cuLimit: info.cuLimit, signers: signatures.length, tips: info.tips,
+        publish('pump_bc', {sig: txSig, slot, ts: createdAt, recvTs, cuPrice: info.cuPrice, cuLimit: info.cuLimit, signers: signatures.length, tips: info.tips,
             create, tokenProgram, swaps});
         if (!db || !write) return;
         const last = swaps[swaps.length - 1];
