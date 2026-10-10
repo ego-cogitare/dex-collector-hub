@@ -32,7 +32,9 @@ function frame(type, ch, seq, body) {
 
 function createServer({port = +(process.env.HUB_PORT || 7710), host = process.env.HUB_BIND || '0.0.0.0', ring = +(process.env.HUB_RING || 20000),
     maxBuf = +(process.env.HUB_MAX_CLIENT_BUF_MB || 64) * 1024 * 1024} = {}) {
-    const seq = new Array(CHANNELS.length).fill(0);
+    /** номера растут и через перезапуск хаба: старт с Date.now()*10 (больше, чем успел выдать прошлый запуск при < 10000 записей/с на канал),
+     *  иначе клиент со старым последним номером отбрасывал бы новые записи как повтор */
+    const seq = new Array(CHANNELS.length).fill(Date.now() * 10);
     const rings = CHANNELS.map(() => []);   // последние кадры канала: [номер, Buffer]
     const clients = new Set();
     const stats = {published: 0, bytes: 0, dropped: 0, clientsTotal: 0};
