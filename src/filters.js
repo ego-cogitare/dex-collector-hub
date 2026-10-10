@@ -4,13 +4,15 @@
  *   {"pump":        {"bc": true, "amm": true, "mayhem": false, "quotes": ["SOL", "pumpCm…"], "creatorChange": true, "pools": true},
  *    "launchlab":   {"quotes": [...], "platforms": [...], "pools": true},
  *    "meteora_dbc": {"quotes": [...], "configs": [...], "pools": true, "completes": true},
- *    "blockhash": true}
+ *    "blockhash": true,
+ *    "bsc": {"fourMeme": true, "flap": true, "tokens": true}}
  *
  *  pump.bc / pump.amm — кривая / PumpSwap (по умолчанию true, если ключ pump есть);
  *  mayhem — true: включать mayhem-монеты (по умолчанию), false — исключать, "only" — только их;
  *  quotes — валюты котировки (контракты; SOL — "SOL" или WSOL); нет ключа — все;
  *  creatorChange — смена криейтора кривой (по умолчанию true при bc); pools / completes — новые пулы / завершения кривой (по умолчанию true);
- *  launchlab.platforms — platform_config; meteora_dbc.configs — config пула; blockhash — свежий blockhash (confirmed) при каждой смене.
+ *  launchlab.platforms — platform_config; meteora_dbc.configs — config пула; blockhash — свежий blockhash (confirmed) при каждой смене;
+ *  bsc — Four.meme / Flap.sh (BNB Chain): сделки кривой и новые токены (tokens), отмена реорганизацией — запись {removed, tx_hash, log_index}.
  * Совместимость: старое "channels": [...] — каналы целиком, без условий.
  *
  * compile(subscribe) → Map(канал → функция(запись) → запись | null): для pump_bc сделки фильтруются поштучно
@@ -52,6 +54,11 @@ function compile(sub) {
         if (name === 'meteora_dbc' && s.completes !== false) out.set('meteora_dbc_complete', r => (!list || list.has(r.config) ? r : null));
     }
     if (sub.blockhash) out.set('blockhash', r => r);
+    if (sub.bsc) {
+        const all = r => r;
+        if (sub.bsc.fourMeme !== false) { out.set('bsc_four_meme', all); if (sub.bsc.tokens !== false) out.set('bsc_four_meme_token', all); }
+        if (sub.bsc.flap !== false) { out.set('bsc_flap', all); if (sub.bsc.tokens !== false) out.set('bsc_flap_token', all); }
+    }
     return out;
 }
 

@@ -7,7 +7,9 @@
     "start": "node src/index.js",
     "bench": "node scripts/bench.js"
   },
-  "engines": {"node": ">=22"},
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "@triton-one/yellowstone-grpc": "^5.0.4",
     "borsh": "^2.0.0",
@@ -15,6 +17,7 @@
     "dotenv": "^17.2.3",
     "log4js": "^6.9.1",
     "msgpackr": "^1.11.2",
-    "mysql2": "^3.15.3"
+    "mysql2": "^3.15.3",
+    "ws": "^8.22.0"
   }
 }

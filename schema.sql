@@ -131,3 +131,110 @@ CREATE TABLE IF NOT EXISTS `pump_fun_bc_mints` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `pump_fun_bc_mints_pk` (`mint`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- ===== BSC (перенесено из node/bsc/schema.sql, collector-amm-01) =====
+-- Four.meme bonding curve (TokenManager2 0x5c952063c7fc8610FFDB798152D69F0B9550762b)
+-- uint256 amounts are stored divided by 1e18 (exact: DECIMAL keeps all 18 fractional digits)
+-- address/hash columns are latin1 everywhere: tokens (utf8mb4 for names) JOIN swaps (latin1) on token must use the index
+
+CREATE TABLE IF NOT EXISTS `four_meme_bc_tokens` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  -- TokenCreate event
+  `creator` char(42) CHARACTER SET latin1 NOT NULL,
+  `token` char(42) CHARACTER SET latin1 NOT NULL,
+  `requestId` decimal(65,0) DEFAULT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `symbol` varchar(255) DEFAULT NULL,
+  `totalSupply` decimal(65,18) DEFAULT NULL,
+  `launchTime` bigint(20) unsigned DEFAULT NULL,
+  `launchFee` decimal(65,18) DEFAULT NULL,
+  -- TokenManager2._tokenInfos(token).quote, 0x000...0 = BNB
+  `quote` char(42) CHARACTER SET latin1 DEFAULT NULL,
+  -- log meta
+  `tx_hash` char(66) CHARACTER SET latin1 NOT NULL,
+  `log_index` int(10) unsigned NOT NULL,
+  `block` int(10) unsigned NOT NULL,
+  `block_timestamp` int(10) unsigned DEFAULT NULL,
+  `received_at` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `four_meme_bc_tokens_token_unique` (`token`),
+  KEY `four_meme_bc_tokens_creator_index` (`creator`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `four_meme_bc_swaps` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `type` enum('TokenPurchase','TokenSale') NOT NULL,
+  -- TokenPurchase / TokenSale event
+  `token` char(42) NOT NULL,
+  `account` char(42) NOT NULL,
+  `price` decimal(65,18) NOT NULL,
+  `amount` decimal(65,18) NOT NULL,
+  `cost` decimal(65,18) NOT NULL,
+  `fee` decimal(65,18) NOT NULL,
+  `offers` decimal(65,18) NOT NULL,
+  `funds` decimal(65,18) NOT NULL,
+  -- log meta
+  `tx_hash` char(66) NOT NULL,
+  `log_index` int(10) unsigned NOT NULL,
+  `block` int(10) unsigned NOT NULL,
+  `block_timestamp` int(10) unsigned DEFAULT NULL,
+  `received_at` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `four_meme_bc_swaps_tx_log_unique` (`tx_hash`, `log_index`),
+  KEY `four_meme_bc_swaps_token_index` (`token`),
+  KEY `four_meme_bc_swaps_account_index` (`account`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- Flap.sh bonding curve (Portal 0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0)
+
+CREATE TABLE IF NOT EXISTS `flap_bc_tokens` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  -- TokenCreated event
+  `ts` bigint(20) unsigned NOT NULL,
+  `creator` char(42) CHARACTER SET latin1 NOT NULL,
+  `nonce` decimal(65,0) DEFAULT NULL,
+  `token` char(42) CHARACTER SET latin1 NOT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `symbol` varchar(255) DEFAULT NULL,
+  `meta` varchar(1024) DEFAULT NULL,
+  -- TokenQuoteSet event, 0x000...0 = BNB
+  `quoteToken` char(42) CHARACTER SET latin1 DEFAULT NULL,
+  -- FlapTokenTaxSet / FlapTokenAsymmetricTaxSet events, basis points (100 = 1%)
+  `tax` int(10) unsigned DEFAULT NULL,
+  `buyTax` int(10) unsigned DEFAULT NULL,
+  `sellTax` int(10) unsigned DEFAULT NULL,
+  -- log meta
+  `tx_hash` char(66) CHARACTER SET latin1 NOT NULL,
+  `log_index` int(10) unsigned NOT NULL,
+  `block` int(10) unsigned NOT NULL,
+  `block_timestamp` int(10) unsigned DEFAULT NULL,
+  `received_at` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `flap_bc_tokens_token_unique` (`token`),
+  KEY `flap_bc_tokens_creator_index` (`creator`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `flap_bc_swaps` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `type` enum('TokenBought','TokenSold') NOT NULL,
+  -- TokenBought / TokenSold event
+  `ts` bigint(20) unsigned NOT NULL,
+  `token` char(42) NOT NULL,
+  `buyer` char(42) DEFAULT NULL,
+  `seller` char(42) DEFAULT NULL,
+  `amount` decimal(65,18) NOT NULL,
+  `eth` decimal(65,18) NOT NULL,
+  `fee` decimal(65,18) NOT NULL,
+  `postPrice` decimal(65,18) NOT NULL,
+  -- log meta
+  `tx_hash` char(66) NOT NULL,
+  `log_index` int(10) unsigned NOT NULL,
+  `block` int(10) unsigned NOT NULL,
+  `block_timestamp` int(10) unsigned DEFAULT NULL,
+  `received_at` bigint(20) unsigned NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `flap_bc_swaps_tx_log_unique` (`tx_hash`, `log_index`),
+  KEY `flap_bc_swaps_token_index` (`token`),
+  KEY `flap_bc_swaps_buyer_index` (`buyer`),
+  KEY `flap_bc_swaps_seller_index` (`seller`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;

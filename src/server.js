@@ -18,7 +18,8 @@ const {logger} = require('./common');
 const {compile} = require('./filters');
 
 /** каналы: номер в кадре ↔ имя (номера фиксированы, клиент знает их из welcome) */
-const CHANNELS = ['_ctl', 'pump_bc', 'pump_amm', 'pump_amm_pool', 'launchlab', 'launchlab_pool', 'meteora_dbc', 'meteora_dbc_pool', 'meteora_dbc_complete', 'blockhash'];
+const CHANNELS = ['_ctl', 'pump_bc', 'pump_amm', 'pump_amm_pool', 'launchlab', 'launchlab_pool', 'meteora_dbc', 'meteora_dbc_pool', 'meteora_dbc_complete', 'blockhash',
+    'bsc_four_meme', 'bsc_four_meme_token', 'bsc_flap', 'bsc_flap_token'];
 const CH_ID = Object.fromEntries(CHANNELS.map((c, i) => [c, i]));
 const packr = new Packr({useRecords: false, int64AsType: 'bigint', useBigIntExtension: false});
 
