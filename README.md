@@ -18,6 +18,7 @@
 | `pump_amm_pool` | новый пул миграции | там же |
 | `launchlab`, `launchlab_pool` | сделки и пулы Raydium LaunchLab | `collectors/launchlab.js` |
 | `meteora_dbc`, `meteora_dbc_pool`, `meteora_dbc_complete` | сделки, пулы, завершения кривой Meteora DBC | `collectors/meteora-dbc.js` |
+| `blockhash` | свежий blockhash `{hash, slot, lastValidBlockHeight, ts}` (confirmed, опрос RPC раз в 1 с); при подключении — последние 30 | `services/blockhash.js` |
 
 `ts` — время из Triton (`createdAt`), мс; `recvTs` — время прихода на хаб. Суммы и резервы в `pump_bc` — целые `BigInt`, как в событии.
 

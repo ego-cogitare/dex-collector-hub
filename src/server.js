@@ -18,7 +18,7 @@ const {logger} = require('./common');
 const {compile} = require('./filters');
 
 /** каналы: номер в кадре ↔ имя (номера фиксированы, клиент знает их из welcome) */
-const CHANNELS = ['_ctl', 'pump_bc', 'pump_amm', 'pump_amm_pool', 'launchlab', 'launchlab_pool', 'meteora_dbc', 'meteora_dbc_pool', 'meteora_dbc_complete'];
+const CHANNELS = ['_ctl', 'pump_bc', 'pump_amm', 'pump_amm_pool', 'launchlab', 'launchlab_pool', 'meteora_dbc', 'meteora_dbc_pool', 'meteora_dbc_complete', 'blockhash'];
 const CH_ID = Object.fromEntries(CHANNELS.map((c, i) => [c, i]));
 const packr = new Packr({useRecords: false, int64AsType: 'bigint', useBigIntExtension: false});
 
@@ -59,6 +59,9 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
                 if (from < r[0][0]) sock.write(frame(2, id, seq[id], {gap: {channel: name, from, firstAvailable: r[0][0]}}));
                 for (const [n, b, rec] of r) if (n >= from) { const out = c.filters.get(id)(rec); if (out) sock.write(out === rec ? b : frame(1, id, n, out)); }
             }
+            /** blockhash: новому клиенту сразу последние хэши (без них он не может подписывать транзакции до следующей смены хэша) */
+            const bh = CH_ID.blockhash;
+            if (c.subs.has(bh) && !(hello.resume && hello.resume.blockhash)) for (const [, b] of rings[bh].slice(-30)) sock.write(b);
             c.ready = true; clients.add(c); stats.clientsTotal++;
             logger.info(`клиент ${c.name} (${c.addr}) подписан: ${[...c.subs].map(i => CHANNELS[i]).join(', ')}${hello.subscribe ? ' ' + JSON.stringify(hello.subscribe) : ''}`);
         });

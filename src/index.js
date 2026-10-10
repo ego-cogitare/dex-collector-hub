@@ -16,7 +16,7 @@ const {createServer} = require('./server');
 const {createPumpBc} = require('./sources/pump-bc');
 logger.level = process.env.LOG_LEVEL || 'info';
 
-const SOURCES = (process.env.SOURCES || 'pump_bc,pump_amm,launchlab,meteora_dbc').split(',').map(s => s.trim()).filter(Boolean);
+const SOURCES = (process.env.SOURCES || 'pump_bc,pump_amm,launchlab,meteora_dbc,blockhash').split(',').map(s => s.trim()).filter(Boolean);
 const WRITE = process.env.DB_WRITE !== '0';
 const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./sources/meteora-dbc')};
 
@@ -62,6 +62,7 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
     }, {stallMs: 20000}) : null;
 
     const amm = SOURCES.includes('pump_amm') ? await require('./sources/pump-amm-runner').startPumpAmm({db, write: WRITE, publish}) : null;
+    const bh = SOURCES.includes('blockhash') ? require('./sources/blockhash').startBlockhash({publish}) : null;
 
     /** метрики раз в минуту */
     const el = monitorEventLoopDelay({resolution: 1}); el.enable();
@@ -71,7 +72,7 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         const s = [...lag].sort((a, b) => a - b); lag.length = 0; const q = p => s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null;
         logger.info({hub: {lagMs: {p50: q(.5), p90: q(.9), p99: q(.99), max: s.at(-1) ?? null, n: s.length}, cpuPct: +((cpu.user + cpu.system) / 1000 / wall * 100).toFixed(1),
             eventLoopP99Ms: +(el.percentile(99) / 1e6).toFixed(2), publishedMin: hub.stats.published - pub0, mbOutMin: +((hub.stats.bytes - bytes0) / 1048576).toFixed(1),
-            clients: [...hub.clients].map(c => `${c.name}:${[...c.subs].length}`), pump_bc: bc && {...bc.stats},
+            clients: [...hub.clients].map(c => `${c.name}:${[...c.subs].length}`), pump_bc: bc && {...bc.stats}, blockhash: bh && {...bh.stats},
             lp: Object.fromEntries(Object.entries(P).map(([n, p]) => [n, {...p.stats, written: p.swaps.written}]))}});
         el.reset(); pub0 = hub.stats.published; bytes0 = hub.stats.bytes;
     }, 60000);
