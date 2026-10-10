@@ -90,7 +90,9 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
             c.sock.write(fb); c.sent++; stats.bytes += fb.length;
         }
     }
-    return {publish, stats, clients, seq, close: () => new Promise(r => server.close(r))};
+    /** размеры колец по каналам (записей и МБ буферов) — для метрики памяти */
+    const ringStats = () => Object.fromEntries(CHANNELS.map((c, i) => [c, rings[i].length]).filter(([, n]) => n > 0));
+    return {publish, stats, clients, seq, ringStats, close: () => new Promise(r => server.close(r))};
 }
 
 module.exports = {createServer, CHANNELS, CH_ID, packr};

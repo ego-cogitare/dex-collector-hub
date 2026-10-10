@@ -87,6 +87,8 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         const s = [...lag].sort((a, b) => a - b); lag.length = 0; const q = p => s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null;
         logger.info({hub: {lagMs: {p50: q(.5), p90: q(.9), p99: q(.99), max: s.at(-1) ?? null, n: s.length}, cpuPct: +((cpu.user + cpu.system) / 1000 / wall * 100).toFixed(1),
             eventLoopP99Ms: +(el.percentile(99) / 1e6).toFixed(2), publishedMin: hub.stats.published - pub0, mbOutMin: +((hub.stats.bytes - bytes0) / 1048576).toFixed(1),
+            mem: (() => { const m = process.memoryUsage(); return `rss ${(m.rss / 1048576).toFixed(0)} heap ${(m.heapUsed / 1048576).toFixed(0)} external ${(m.external / 1048576).toFixed(0)} arrayBuffers ${(m.arrayBuffers / 1048576).toFixed(0)} МБ`; })(),
+            rings: Object.entries(hub.ringStats()).map(([k, v]) => `${k}:${v}`).join(' '),
             clients: [...hub.clients].map(c => `${c.name}:${[...c.subs].length}`), pump_bc: bc && {...bc.stats}, blockhash: bh && {...bh.stats}, funding: funding && Object.entries(funding.stats()).filter(([, v]) => typeof v !== 'object').map(([k, v]) => `${k}=${v}`).join(' '),
             meta: meta && Object.entries(meta.stats).map(([k, v]) => `${k}=${v}`).join(' '),
             bsc: bsc && Object.entries(bsc).map(([n, x]) => `${n} ${Object.entries(x.stats).map(([k, v]) => `${k}=${v}`).join(' ')}`).join('; '),
