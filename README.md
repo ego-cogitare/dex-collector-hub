@@ -19,6 +19,7 @@
 | `launchlab`, `launchlab_pool` | сделки и пулы Raydium LaunchLab | `collectors/launchlab.js` |
 | `meteora_dbc`, `meteora_dbc_pool`, `meteora_dbc_complete` | сделки, пулы, завершения кривой Meteora DBC | `collectors/meteora-dbc.js` |
 | `blockhash` | свежий blockhash `{hash, slot, lastValidBlockHeight, ts}` (confirmed, опрос RPC раз в 1 с); при подключении — последние 30 | `services/blockhash.js` |
+| `meta` | метадата новой монеты pump.fun: `{mint, uri, name, symbol, createdTs, fetchedAt, fetchMs, json}` (json = null и `error`, если не загрузилась); строка с картинкой (size, sha256, pHash) — в `pump_fun_bc_meta` | `sandbox/trader.js` (LOG_META), `services/metadata.processor.js` |
 | `bsc_four_meme`, `bsc_four_meme_token`, `bsc_flap`, `bsc_flap_token` | BNB Chain: сделки кривой и новые токены Four.meme и Flap.sh (websocket `BSC_WS_URL`); отменённый реорганизацией лог — `{removed, tx_hash, log_index}` | `node/bsc` (collector-amm-01), таблицы — `docs/bsc-tables.md` |
 
 `ts` — время из Triton (`createdAt`), мс; `recvTs` — время прихода на хаб. Суммы и резервы в `pump_bc` — целые `BigInt`, как в событии.
@@ -26,6 +27,7 @@
 ### Что пишется в MySQL (`DB_WRITE=1`)
 
 - `pump_fun_bc_swaps`, `pump_fun_bc_mints` — правила трейдера: SOL-кривые 185 с после создания монеты, mayhem — 10 мин, кривые не в SOL — все сделки;
+- `pump_fun_bc_meta` — метадата монет (SOL, не mayhem), как писал трейдер с LOG_META=1;
 - `four_meme_bc_swaps/tokens`, `flap_bc_swaps/tokens` — как у `node/bsc` (INSERT IGNORE по tx_hash+log_index, при реорганизации — DELETE);
 - `lp_pump_amm_swaps/pools`, `lp_launchlab_swaps/pools`, `lp_meteora_dbc_swaps/pools/completes` — как у `collectors/`.
 
@@ -52,7 +54,8 @@ TCP, `TCP_NODELAY`, одно соединение на бота.
  "launchlab": {"quotes": [...], "platforms": [...], "pools": true},
  "meteora_dbc": {"quotes": [...], "configs": [...], "pools": true, "completes": true},
  "blockhash": true,
- "bsc": {"fourMeme": true, "flap": true, "tokens": true}}
+ "bsc": {"fourMeme": true, "flap": true, "tokens": true},
+ "meta": true}
 ```
 
 `mayhem`: `true` — включать (по умолчанию), `false` — исключать, `"only"` — только mayhem. `quotes` — контракты валют котировки, SOL — `"SOL"`. Нет ключа — без ограничения. Подробно — `src/filters.js`.

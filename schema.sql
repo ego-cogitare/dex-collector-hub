@@ -238,3 +238,15 @@ CREATE TABLE IF NOT EXISTS `flap_bc_swaps` (
   KEY `flap_bc_swaps_buyer_index` (`buyer`),
   KEY `flap_bc_swaps_seller_index` (`seller`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- ===== Метадата монет pump.fun (src/sources/pump-meta.js; раньше писал трейдер copy-trade-solana с LOG_META=1) =====
+CREATE TABLE IF NOT EXISTS `pump_fun_bc_meta` (
+  `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+  `mint` varchar(255) DEFAULT NULL,
+  `url` varchar(255) DEFAULT NULL,
+  `name` varchar(255) DEFAULT NULL,
+  `symbol` varchar(255) DEFAULT NULL,
+  `image` json DEFAULT NULL,
+  `data` json DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
