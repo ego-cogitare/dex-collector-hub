@@ -44,7 +44,9 @@ function parseTrade(buffer) {
     let off = 8 + 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8 + 8 + 8 + 32 + 8 + 8 + 32 + 8 + 8 + 1 + 8 + 8 + 8 + 8;
     off += 4 + buffer.readUInt32LE(off) + 1 + 8 + 8;
     let quote = {quote_mint: null};
-    if (buffer.length >= off + 76) {
+    /** котировка — только у кривых не в SOL (их *_sol_reserves нулевые): у SOL-кривых с разделением комиссий (SellV2) на этом месте
+     *  адрес конфига pfee — раньше такая сделка считалась «не в SOL» и терялась (запись в MySQL с 11.10 17:42 и фильтр quotes у ботов) */
+    if (buffer.length >= off + 76 && d.virtual_sol_reserves === 0n) {
         const qm = buffer.subarray(off + 20, off + 52);
         quote = {buyback_fee_basis_points: buffer.readBigUInt64LE(off), buyback_fee: buffer.readBigUInt64LE(off + 8), quote_mint: qm.some(b => b !== 0) ? bs58.encode(qm) : null,
             quote_amount: buffer.readBigUInt64LE(off + 52), virtual_quote_reserves: buffer.readBigUInt64LE(off + 60), real_quote_reserves: buffer.readBigUInt64LE(off + 68)};
