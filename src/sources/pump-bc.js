@@ -7,11 +7,11 @@
  * валюта котировки не-SOL кривых и суммы/резервы в ней), смена криейтора (MigrateBondingCurveCreator, 9ba768dcd56cf303).
  *
  * Запись в MySQL — как в copy-trade-solana/sandbox/trader.js при LOG_SWAPS_HISTORY=1 и NONSOL_STORE=1 (те же строки, поля и SQL):
- *  - SOL-кривые: строка монеты при создании (CreateV2 + InitializeMint2), её сделки — PUMP_BC_SOL_WINDOW_MS (185 с) после создания;
+ *  - SOL-кривые: строка монеты при создании (CreateV2 + InitializeMint2); сделки — все, за всю жизнь кривой (с 11.10; раньше — 185 с после создания);
  *    окно закрывается раньше, если первая сделка монеты — продажа (после 4-й сделки, как в трейдере); дубль — ключ подпись:vsr:user:amountSol;
  *    цена price_sol — по последней сделке транзакции, монета — последней сделки транзакции (как sage в трейдере);
  *    подпись — всегда подпись транзакции (исправлено относительно трейдера, см. parseLogs);
- *  - mayhem: монета, создание которой видели, и её сделки PUMP_BC_MAYHEM_WINDOW_MS (10 мин);
+ *  - mayhem: строка монеты при создании; сделки — все (с 11.10; раньше — 10 мин после создания);
  *  - кривые не в SOL: все сделки (суммы в валюте котировки с её разрядностью), строка монеты — один раз за 30 мин.
  *
  * Раздача (канал pump_bc): одна запись на транзакцию — {sig, slot, ts (createdAt Triton, мс), recvTs, cuPrice, cuLimit, signers, tips,
@@ -25,8 +25,6 @@ const PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const WSOL = 'So11111111111111111111111111111111111111112';
 const DISC_TRADE = 'bddb7fd34ee661ee', DISC_CREATOR_CHANGE = '9ba768dcd56cf303';
 const COMPUTE_BUDGET = 'ComputeBudget111111111111111111111111111111';
-const SOL_WINDOW_MS = +(process.env.PUMP_BC_SOL_WINDOW_MS || 185000);
-const MAYHEM_WINDOW_MS = +(process.env.PUMP_BC_MAYHEM_WINDOW_MS || 600000);
 
 const SWAP_STRUCT = {struct: {
     mint: {array: {type: 'u8', len: 32}}, sol_amount: 'u64', token_amount: 'u64', is_buy: 'u8', user: {array: {type: 'u8', len: 32}}, timestamp: 'i64',
@@ -135,8 +133,9 @@ function createPumpBc({db, write = true, publish = () => {}}) {
     if (!write) swapsW.push = () => {};
     const mintSql = (where) => db && write ? db.query(...where).catch(e => logger.error('pump_fun_bc_mints', e.message)) : null;
     const stats = {tx: 0, swaps: 0, creates: 0, written: 0, mayhem: 0, nonSol: 0, creatorChanges: 0, skipped: 0};
-    const solLive = new Map();     // монета → {keys, n, firstSell} — окно записи SOL-сделок
-    const mayhemLive = new Set();
+    /** дубли: та же транзакция повторно (переподключение потока) — подписи за последние 10 мин */
+    const txSeen = new Map(); setInterval(() => { const t = Date.now() - 600000; for (const [k, v] of txSeen) if (v < t) txSeen.delete(k); }, 60000);
+    const mayhemRows = new Set();
     const qKeys = new Map();       // ключи дублей mayhem/не-SOL по монете (10 мин)
     const nonSolMintRows = new Set();
     const row = (sw, mint, slot, amt, price, vq, vt, createdAt, info, d, signers) => ({signature: sw.signature, mint, user: sw.user, block: slot, amount_sol: amt,
@@ -180,17 +179,18 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         publish('pump_bc', {sig: txSig, slot, ts: createdAt, recvTs, cuPrice: info.cuPrice, cuLimit: info.cuLimit, signers: signatures.length, tips: info.tips,
             create, tokenProgram, createData: createLine ? createLine.slice(14) : null, tokens, swaps});
         if (!db || !write) return;
+        if (txSeen.has(txSig)) return; txSeen.set(txSig, recvTs);
         const last = swaps[swaps.length - 1];
 
-        /** mayhem: монета, создание которой видели, — MAYHEM_WINDOW_MS */
+        /** mayhem: строка монеты при создании, сделки — все */
         if (last.mayhem_mode) {
-            if (create && !mayhemLive.has(last.mint)) {
-                mayhemLive.add(last.mint); setTimeout(() => mayhemLive.delete(last.mint), MAYHEM_WINDOW_MS);
+            if (create && !mayhemRows.has(last.mint)) {
+                mayhemRows.add(last.mint); setTimeout(() => mayhemRows.delete(last.mint), 600000);
                 mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, 1, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)',
                     [last.mint, last.creator, createdAt, last.quote_mint || WSOL, last.mint]]);
             }
             for (const sw of swaps) {
-                if (!sw.mayhem_mode || !sw.mint || !mayhemLive.has(sw.mint)) continue;
+                if (!sw.mayhem_mode || !sw.mint) continue;
                 const quote = !!sw.quote_mint;
                 if (dupQ(sw.mint, `${sw.signature}:${sw.virtual_token_reserves}:${sw.user}:${quote ? sw.quote_amount : sw.total}`)) continue;
                 const d = quote ? 10 ** decimalsOf(meta, sw.quote_mint) : 1e9;
@@ -216,26 +216,20 @@ function createPumpBc({db, write = true, publish = () => {}}) {
             }
             return;
         }
-        /** SOL-кривые */
+        /** SOL-кривые: строка монеты при создании, сделки — все (монеты без увиденного создания и с «битым стартом» отсеивает выгрузка) */
         const mint = last.mint;
-        if (create && tokenProgram && !solLive.has(mint)) {
+        if (create && tokenProgram) {
             stats.creates++;
-            solLive.set(mint, {keys: new Set(), n: 0, firstSell: null});
-            setTimeout(() => solLive.delete(mint), SOL_WINDOW_MS);
             mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) VALUES (?, ?, ?, ?, ?)', [last.mint, last.creator, last.mayhem_mode, createdAt, WSOL]]);
         }
-        const st = solLive.get(mint);
-        if (!st) return;
-        const price = Number(last.virtual_sol_reserves) / Number(last.virtual_token_reserves) / 1e3;
+        /** у каждой сделки — своя монета (в транзакции бывают сделки по нескольким кривым); price_sol — по последней сделке этой монеты в транзакции, как раньше */
+        const lastOf = new Map(); for (const sw of swaps) if (sw.mint && !sw.quote_mint && !sw.mayhem_mode) lastOf.set(sw.mint, sw);
         for (const sw of swaps) {
+            if (!sw.mint || sw.quote_mint || sw.mayhem_mode) continue;
+            const l = lastOf.get(sw.mint), price = Number(l.virtual_sol_reserves) / Number(l.virtual_token_reserves) / 1e3;
             const amt = Number(sw.total) / 1e9, amountSol = sw.is_buy ? amt : -amt, vsr = Number(sw.virtual_sol_reserves) / 1e9;
-            const key = sw.signature + ':' + vsr + ':' + sw.user + ':' + amountSol;
-            if (st.keys.has(key)) continue;
-            st.keys.add(key); st.n++; if (st.firstSell === null) st.firstSell = amountSol < 0;
-            swapsW.push(row(sw, mint, slot, amountSol, price, vsr, Number(sw.virtual_token_reserves) / 1e6, createdAt, info, 1e9, signatures.length)); stats.written++;
+            swapsW.push(row(sw, sw.mint, slot, amountSol, price, vsr, Number(sw.virtual_token_reserves) / 1e6, createdAt, info, 1e9, signatures.length)); stats.written++;
         }
-        /** как в трейдере: после 4-й сделки монета с первой сделкой-продажей перестаёт записываться */
-        if (st.n > 3 && st.firstSell) solLive.delete(mint);
     }
     return {name: 'pump_bc', PROGRAM, onTx, stats, close: () => swapsW.close()};
 }

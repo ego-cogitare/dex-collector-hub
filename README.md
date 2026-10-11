@@ -26,7 +26,7 @@
 
 ### Что пишется в MySQL (`DB_WRITE=1`)
 
-- `pump_fun_bc_swaps`, `pump_fun_bc_mints` — правила трейдера: SOL-кривые 185 с после создания монеты, mayhem — 10 мин, кривые не в SOL — все сделки;
+- `pump_fun_bc_swaps`, `pump_fun_bc_mints` — все сделки кривой pump.fun (SOL, mayhem, не-SOL) за всю жизнь кривой (с 11.10; раньше SOL — 185 с, mayhem — 10 мин после создания); строка монеты — при создании;
 - `pump_fun_bc_creator_changes` — смена криейтора кривой (событие MigrateBondingCurveCreator; почти всегда — разделение комиссий в первые 2 с);
 - `pump_fun_funding` — фандинг криейтора (первых покупателей) монет SOL, не mayhem, у которых больше 15 сделок — трассировщик Helius, как у трейдера с FETCH_FUNDING_HISTORY=1 (канала нет);
 - `pump_fun_bc_meta` — метадата монет (SOL, не mayhem), как писал трейдер с LOG_META=1;
