@@ -8,6 +8,7 @@
  */
 const bs58 = require('bs58').default;
 const logger = require('log4js').getLogger('[hub]');
+const MAX_BATCH = 1000;   // строк в одном INSERT
 
 /** Цена и лимит CU из инструкций ComputeBudget (как getComputeUnitValues в bot/utils.js; своя копия — коллекторам не нужен весь бот) */
 const COMPUTE_BUDGET = 'ComputeBudget111111111111111111111111111111';
@@ -99,25 +100,34 @@ class BulkWriter {
     push(row) { this.buf.push(this.columns.map(c => row[c] === undefined ? null : row[c])); if (this.buf.length >= this.size) this.flush(); }
     /** временные ошибки (взаимная блокировка, ожидание блокировки, обрыв соединения) — пачка возвращается в очередь, до 5 повторов;
      *  прочие — пачка теряется (ошибка в лог). Повтор не даёт дублей там, где есть уникальный ключ и skipDuplicates. */
-    async flush() {
-        if (!this.buf.length) return;
-        const rows = this.buf; this.buf = [];
-        try {
-            await this.db.query(this.sql, [rows]);
-            this.written += rows.length; this.retries = 0;
-        } catch (e) {
-            const transient = /Deadlock|Lock wait timeout|ECONNRESET|PROTOCOL_CONNECTION_LOST|ETIMEDOUT|ECONNREFUSED|closed state/i.test(`${e.code} ${e.message}`);
-            if (transient && (this.retries || 0) < 5) {
-                this.retries = (this.retries || 0) + 1;
-                this.buf = rows.concat(this.buf);
-                logger.warn(`${this.table}: ${e.message} — повтор ${this.retries}, строк ${rows.length}`);
-            } else {
-                this.retries = 0;
-                logger.error(`${this.table}: ${e.message} — потеряно строк ${rows.length}`);
+    /** Одна вставка за раз: параллельные INSERT через разные соединения пула коммитились не по порядку, и id (по нему выгрузка восстанавливает
+     *  порядок сделок) перемешивались — после записи всех сделок кривой (11.10) цепочка резервов рвалась у 3.9% соседних сделок. Пока вставка идёт,
+     *  строки копятся и уходят следующей пачкой (до MAX_BATCH). Временные ошибки — пачка обратно в начало очереди, до 5 повторов; прочие — пачка теряется. */
+    flush() {
+        if (this.busy) return this.busy;
+        if (!this.buf.length) return Promise.resolve();
+        this.busy = (async () => {
+            while (this.buf.length) {
+                const rows = this.buf.splice(0, MAX_BATCH);
+                try {
+                    await this.db.query(this.sql, [rows]);
+                    this.written += rows.length; this.retries = 0;
+                } catch (e) {
+                    const transient = /Deadlock|Lock wait timeout|ECONNRESET|PROTOCOL_CONNECTION_LOST|ETIMEDOUT|ECONNREFUSED|closed state/i.test(`${e.code} ${e.message}`);
+                    if (transient && (this.retries || 0) < 5) {
+                        this.retries = (this.retries || 0) + 1;
+                        this.buf = rows.concat(this.buf);
+                        logger.warn(`${this.table}: ${e.message} — повтор ${this.retries}, строк ${rows.length}`);
+                        break;   // следующая попытка — по таймеру
+                    }
+                    this.retries = 0;
+                    logger.error(`${this.table}: ${e.message} — потеряно строк ${rows.length}`);
+                }
             }
-        }
+        })().finally(() => { this.busy = null; });
+        return this.busy;
     }
-    close() { clearInterval(this.timer); return this.flush(); }
+    async close() { clearInterval(this.timer); if (this.busy) await this.busy; return this.flush(); }
 }
 
 /**
