@@ -25,7 +25,9 @@ const packr = new Packr({useRecords: false, int64AsType: 'bigint', useBigIntExte
 
 function frame(type, ch, seq, body) {
     const payload = packr.pack(body);
-    const b = Buffer.allocUnsafe(4 + 1 + 1 + 8 + payload.length);
+    /** allocUnsafeSlow — своя память под кадр: allocUnsafe режет малые буферы из общих блоков по 8 КБ, и кадр редкого канала (мета, blockhash, BSC-токены),
+     *  живущий в кольце часами, держал весь блок с давно ушедшими кадрами частых каналов — arrayBuffers хаба росли ~70 МБ/ч (10–11.10, до 685 МБ) */
+    const b = Buffer.allocUnsafeSlow(4 + 1 + 1 + 8 + payload.length);
     b.writeUInt32LE(1 + 1 + 8 + payload.length, 0); b.writeUInt8(type, 4); b.writeUInt8(ch, 5); b.writeBigUInt64LE(BigInt(seq), 6); payload.copy(b, 14);
     return b;
 }
