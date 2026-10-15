@@ -20,6 +20,10 @@
  *   - после обрыва и переподключения потока — по всем активным пулам всё после последней транзакции пула из потока (lastSig);
  *   - после перезапуска процесса — после последней записанной сделки пула.
  * Подписи, уже полученные из потока или RPC, повторно не запрашиваются; дубли сделок — по (signature, ev_index), он же уникальный ключ в MySQL.
+ * Порядок внутри слота — tx_index (16.10): у потока — номер транзакции в блоке из gRPC (index); у дотянутых — по списку getSignaturesForAddress
+ *   (внутри слота он ровно обратный порядку в блоке — сверено на 24 слотах): между соседями с известным номером (поток, границы until/before) — дробный,
+ *   слот без известных номеров — место в слоте (0, 1, …), а если это самый свежий слот дотягивания без границы before — точные номера из getBlock (подписи).
+ *   Сортировка сделок пула — (slot, tx_index, ev_index).
  * Окно — от миграции; после него пул пишется до ближайшей смены потока. Раз в минуту — {amm: …}: сделок за минуту, из них дотянуто (и доля), вызовов RPC; доля > 10% — предупреждение.
  */
 const bs58 = require('bs58').default;
@@ -105,9 +109,22 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     /** активные пулы: адрес → {mint, quote_mint, until, seen (ключи сделок), sigs (полученные подписи пула), migrationSig, lastSig, backfill} */
     const active = new Map();
     const poolInfo = pool => active.get(pool) || null;
+    /** номера транзакций потока в блоке: подпись → {slot, idx} (опоры для номеров дотянутых); последние ~200 тыс. */
+    const txIdx = new Map();
+    const rememberIdx = (sig, slot, idx) => {
+        txIdx.set(sig, {slot, idx});
+        if (txIdx.size > 250000) { let n = 0; for (const k of txIdx.keys()) { txIdx.delete(k); if (++n >= 50000) break; } }
+    };
 
-    /** транзакция (поток или RPC) → пулы и сделки; src 0 — поток, 1 — RPC */
-    function handleTx(d, src, why = null) {
+    /** транзакция (поток или RPC) → пулы и сделки; src 0 — поток, 1 — RPC; txIndex — порядок в блоке (у потока — из gRPC) */
+    function handleTx(d, src, why = null, txIndex = null) {
+        if (src === 0) {
+            const ti = d.transaction.transaction.index;
+            if (ti !== undefined && ti !== null) {
+                txIndex = Number(ti);
+                rememberIdx(bs58.encode(d.transaction.transaction.signature), Number(d.transaction.slot), txIndex);   // и транзакции без событий AMM — опоры для дотянутых
+            }
+        }
         if (src === 0 && !hasAmmEvent(d.transaction.transaction)) { stats.skipped++; return; }
         const meta = txMeta(d);
         if (meta.failed) return;
@@ -131,17 +148,53 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             const key = `${s.signature}:${s.ev_index}`;   // как уникальный ключ в MySQL
             if (a.seen.has(key)) continue;
             a.seen.add(key);
-            swaps.push({...s, src, is_mayhem: a.is_mayhem});   // is_mayhem — для фильтра раздачи, в MySQL не пишется
+            swaps.push({...s, src, tx_index: txIndex, is_mayhem: a.is_mayhem});   // is_mayhem — для фильтра раздачи, в MySQL не пишется
             stats.swaps++; if (src) { stats.backfilled++; bfWhy[why] = (bfWhy[why] || 0) + 1; }
             /** первая сделка из потока: пропущенное — между миграцией и ней */
             if (src === 0 && !a.backfill) startBackfill(s.pool, {until: a.migrationSig, before: s.signature, delay: CONFIRM_MS, why: 'new'});
         }
     }
 
-    async function fetchTx(signature, why) {
+    async function fetchTx(signature, why, txIndex = null) {
         const r = await rpc('getTransaction', [signature, {encoding: 'json', maxSupportedTransactionVersion: 1, commitment: 'confirmed'}]);
         stats.rpcCalls++;
-        if (r) handleTx(rpcToGrpc(r), 1, why);
+        if (r) handleTx(rpcToGrpc(r), 1, why, txIndex);
+    }
+
+    /** номера в блоке для подписей дотягивания: chron — подписи пула от старых к новым (getSignaturesForAddress, развёрнутый), until/before — границы промежутка */
+    async function orderIndex(chron, {until, before}) {
+        const out = new Map();
+        const known = sig => { const k = txIdx.get(sig); return k ? k.idx : undefined; };
+        const bySlot = [];
+        for (const x of chron) { const last = bySlot[bySlot.length - 1]; if (last && last.slot === x.slot) last.sigs.push(x.signature); else bySlot.push({slot: x.slot, sigs: [x.signature]}); }
+        for (let g = 0; g < bySlot.length; g++) {
+            const {slot, sigs} = bySlot[g];
+            const u = until && txIdx.get(until), b = before && txIdx.get(before);
+            const seq = [...(u && u.slot === slot ? [{sig: until, v: u.idx}] : []), ...sigs.map(sig => ({sig, v: known(sig)})), ...(b && b.slot === slot ? [{sig: before, v: b.idx}] : [])];
+            if (seq.every(e => e.v === undefined)) {
+                if (g === bySlot.length - 1 && !before) {   // самый свежий слот без границы: в него могут прийти сделки потока — точные номера из блока
+                    try {
+                        const blk = await rpc('getBlock', [slot, {transactionDetails: 'signatures', rewards: false, maxSupportedTransactionVersion: 0, commitment: 'confirmed'}]);
+                        stats.rpcCalls++;
+                        const pos = new Map(blk.signatures.map((s2, i) => [s2, i]));
+                        for (const e of seq) if (pos.has(e.sig)) e.v = pos.get(e.sig);
+                    } catch (e) { err(`getBlock ${slot}`, e); }
+                }
+                if (seq.every(e => e.v === undefined)) seq.forEach((e, i) => { e.v = i; });
+            }
+            /** пробелы между известными: (L, R) — равномерно; только L — (L, L + 1); только R — (R − 1, R) */
+            for (let i = 0; i < seq.length;) {
+                if (seq[i].v !== undefined) { i++; continue; }
+                let j = i; while (j < seq.length && seq[j].v === undefined) j++;
+                const L = i > 0 ? seq[i - 1].v : undefined, R = j < seq.length ? seq[j].v : undefined, m = j - i;
+                for (let k = 1; k <= m; k++) {
+                    seq[i + k - 1].v = L !== undefined && R !== undefined ? L + (R - L) * k / (m + 1) : L !== undefined ? L + k / (m + 1) : R - 1 + k / (m + 1);
+                }
+                i = j;
+            }
+            for (const e of seq) out.set(e.sig, e.v);
+        }
+        return out;
     }
 
     /** одна страница подписей; нода может не знать подпись границы (Transaction … not found): before — повторы, затем без него;
@@ -174,10 +227,12 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             opts.before = sigs.at(-1).signature;
             if (page === MAX_PAGES - 1) logger.warn(`дотягивание ${pool}: больше ${MAX_PAGES * 1000} подписей, взяты последние`);
         }
-        for (const x of all.slice().reverse()) {
+        const chron = all.slice().reverse();
+        const order = await orderIndex(chron, {until, before});
+        for (const x of chron) {
             if (x.err || a.sigs.has(x.signature)) continue;
             a.sigs.add(x.signature);
-            await fetchTx(x.signature, why).catch(e => { a.sigs.delete(x.signature); err('getTransaction', e); });
+            await fetchTx(x.signature, why, order.has(x.signature) ? order.get(x.signature) : null).catch(e => { a.sigs.delete(x.signature); err('getTransaction', e); });
         }
     }
 

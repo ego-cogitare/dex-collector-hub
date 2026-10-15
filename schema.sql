@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS lp_pump_amm_swaps (
   cu_price BIGINT NULL, cu_limit BIGINT NULL, signers_count INT NULL, tips JSON NULL,
   src TINYINT NOT NULL DEFAULT 0 COMMENT '0 — поток gRPC (ts — время прихода, мс), 1 — дотянуто из RPC (ts — время блока, с)',
   ev_index INT NULL COMMENT 'номер события программы в транзакции',
+  tx_index DOUBLE NULL COMMENT 'порядок транзакции в блоке: поток — номер из gRPC, дотянутые — по списку подписей пула (между известными соседями — дробный)',
   KEY lp_pump_amm_swaps_pool (pool), KEY lp_pump_amm_swaps_ts (ts),
   UNIQUE KEY lp_pump_amm_swaps_sig_ev (signature, ev_index)
 ) ENGINE=InnoDB COMMENT='сделки pump.fun AMM в первые 60 мин после миграции (collectors/pump-amm.js)';

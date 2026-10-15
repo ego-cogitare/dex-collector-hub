@@ -19,7 +19,7 @@ const EV_BUY = '67f4521f2cf57777', EV_SELL = '3e2f370aa503dc2a', EV_CREATE_POOL 
 const SWAP_COLUMNS = ['signature', 'ev_index', 'slot', 'ts', 'event_ts', 'pool', 'mint', 'quote_mint', 'user', 'is_buy', 'ix_name',
     'base_amount', 'quote_amount', 'user_quote_amount', 'limit_quote_amount', 'pool_base_reserves', 'pool_quote_reserves',
     'lp_fee', 'protocol_fee', 'coin_creator_fee', 'cashback', 'buyback_fee', 'lp_fee_bps', 'protocol_fee_bps', 'coin_creator_fee_bps',
-    'cu_price', 'cu_limit', 'signers_count', 'tips'];   // coin_creator — один на монету, в lp_pump_amm_pools
+    'cu_price', 'cu_limit', 'signers_count', 'tips', 'tx_index'];   // coin_creator — один на монету, в lp_pump_amm_pools; tx_index — ставит pump-amm-runner
 const POOL_COLUMNS = ['pool', 'mint', 'quote_mint', 'creator', 'coin_creator', 'pool_index', 'base_decimals', 'quote_decimals',
     'base_amount_in', 'quote_amount_in', 'lp_mint', 'is_mayhem', 'created_at_ms', 'slot', 'signature'];
 
