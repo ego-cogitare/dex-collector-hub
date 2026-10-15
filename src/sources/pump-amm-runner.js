@@ -7,6 +7,9 @@
  *   migrate — транзакции, где есть и программа кривой, и программа AMM: CreatePoolEvent → пул активен на окно (пулы, созданные вручную, не пишем);
  *   pools   — адреса активных пулов; при смене списка (не чаще раза в 5 с) открывается новый поток, старый закрывается, когда новый начал отдавать
  *             транзакции (перекрытие без пропуска; замена фильтров в том же потоке теряла сделки на несколько секунд).
+ *             Новый поток открывает только новый пул (миграция). Пул с истёкшим окном сразу выходит из active (сделки не пишутся и не раздаются),
+ *             а из фильтра уходит «под шумок» — при следующей смене потока из-за новой миграции; отдельная смена — только если истёкших в фильтре
+ *             AMM_STALE_MAX (50) или старейший из них висит AMM_STALE_MIN (15) минут (миграций давно не было).
  * Сделки — события BuyEvent / SellEvent (emit_cpi во внутренних инструкциях: не обрезаются, в отличие от логов); CU, типсы, подписанты — из транзакции.
  *
  * Смена фильтров и переподключение потока дают короткие пропуски (WebSocket публичной ноды рвался под нагрузкой, gRPC без дотягивания
@@ -28,6 +31,8 @@ const HTTP_URL = process.env.AMM_HTTP_RPC || process.env.RPC;   // дотяги�
 const CONFIRM_MS = Number(process.env.AMM_CONFIRM_MS || 3000);     // RPC узнаёт подпись после подтверждения — ждём перед запросом
 const FALLBACK_MS = Number(process.env.AMM_FALLBACK_MS || 30000);  // сделок из потока нет — дотягиваем по таймеру
 const MAX_PAGES = 50;
+const STALE_MAX = Number(process.env.AMM_STALE_MAX || 50);              // истёкших пулов в фильтре потока — сменить поток без новой миграции
+const STALE_MS = Number(process.env.AMM_STALE_MIN || 15) * 60000;       // … или старейший истёкший висит в фильтре дольше
 
 /** HTTP JSON-RPC: повтор с растущей паузой при 429 и сетевой ошибке */
 async function rpc(method, params, tries = 4) {
@@ -93,7 +98,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     if (!write) { swapsW.push = () => {}; poolsW.push = () => {}; logger.warn('pump_amm: запись в MySQL выключена'); }
     const swaps = {push: r => { swapsW.push(r); publish('pump_amm', r); }, close: () => swapsW.close()};
     const pools = {push: r => { poolsW.push(r); publish('pump_amm_pool', r); }, close: () => poolsW.close()};
-    const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, errors: 0};
+    const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, staleRefreshes: 0, staleSubscribed: 0, errors: 0};
     const bfWhy = {};   // дотянутые сделки по причине: new — первые секунды пула, fallback — нет сделок из потока, reconnect, restore — после старта
     const err = (where, e) => { stats.errors++; if (stats.errors <= 20) logger.error(`${where}: ${e.message || e}`); };
 
@@ -192,9 +197,13 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         }).finally(() => { catchUp = null; if (catchUpAgain) { catchUpAgain = false; scheduleCatchUp(); } });
     }
 
+    /** пулы в фильтре последнего открытого потока: истёкшие из них ждут следующей смены потока (stale: пул → когда истёк) */
+    let subscribed = new Set();
+    const stale = new Map();
     const filters = () => {
         const f = {migrate: {accountRequired: [amm.BONDING_CURVE, amm.PROGRAM]}};
         if (active.size) f.pools = {accountInclude: [...active.keys()]};
+        subscribed = new Set(active.keys()); stale.clear();
         return f;
     };
     /** Смена списка пулов — новым потоком с перекрытием: старый закрывается, когда из нового пришла первая транзакция (или через 20 с).
@@ -256,11 +265,13 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     stream = (await openStream()).st;
     for (const [p, until] of restored) gapFill(p, {until, why: 'restore'}).catch(e => err(`дотягивание после старта ${p}`, e));
 
-    /** просроченные пулы — из подписки (с запасом 30 с: сделки окна, дотягиваемые позже, ещё принимаются) */
+    /** просроченные пулы (с запасом 30 с: сделки окна, дотягиваемые позже, ещё принимаются) — из active сразу, из фильтра потока —
+     *  при следующей смене потока (новая миграция); свою смену потока — только если истёкших в фильтре много или висят давно */
     setInterval(() => {
-        const now = Date.now(); let n = 0;
-        for (const [p, a] of active) if (a.until + 30000 <= now) { clearTimeout(a.fallbackTimer); active.delete(p); n++; }
-        if (n) refresh();
+        const now = Date.now();
+        for (const [p, a] of active) if (a.until + 30000 <= now) { clearTimeout(a.fallbackTimer); active.delete(p); if (subscribed.has(p)) stale.set(p, now); }
+        stats.staleSubscribed = stale.size;
+        if (stale.size && (stale.size >= STALE_MAX || now - Math.min(...stale.values()) >= STALE_MS)) { stats.staleRefreshes++; refresh(); }
     }, 30000);
 
     /** статистика за минуту */
@@ -270,7 +281,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         prev = {...stats};
         const share = d.swaps ? +(d.backfilled / d.swaps * 100).toFixed(1) : 0;
         const line = {swapsMin: d.swaps, backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
-            filterUpdatesMin: d.filterUpdates, active: active.size,
+            filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size,
             backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors}};
         for (const k in bfWhy) delete bfWhy[k];
         if (share > 10 && d.swaps > 50) logger.warn({amm: 'много дотянуто', ...line}); else logger.info({amm: line});
