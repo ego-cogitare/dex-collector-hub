@@ -20,6 +20,7 @@
 | `meteora_dbc`, `meteora_dbc_pool`, `meteora_dbc_complete` | сделки, пулы, завершения кривой Meteora DBC | `collectors/meteora-dbc.js` |
 | `blockhash` | свежий blockhash `{hash, slot, lastValidBlockHeight, ts}` (confirmed, опрос RPC раз в 1 с); при подключении — последние 30 | `services/blockhash.js` |
 | `meta` | метадата новой монеты pump.fun: `{mint, uri, name, symbol, createdTs, fetchedAt, fetchMs, json}` (json = null и `error`, если не загрузилась); строка с картинкой (size, sha256, pHash) — в `pump_fun_bc_meta` | `sandbox/trader.js` (LOG_META), `services/metadata.processor.js` |
+| `funding` | фандинг криейтора новой монеты pump.fun (SOL, не mayhem): трасса на 3-й сделке, если первые 2 — покупки; `{mint, wallet, t0, requestedAt, tracedAt, traceMs, terminalType, creatorAgeSec, fundingDepth, fundingAmount, chainMinAgeSec, clusterHit, chain: [{wallet, parent, amount, walletAgeSec, sigCount}]}`; строка в `pump_fun_funding` | `services/funding-tracer.js`, Triton RPC |
 | `bsc_four_meme`, `bsc_four_meme_token`, `bsc_flap`, `bsc_flap_token` | BNB Chain: сделки кривой и новые токены Four.meme и Flap.sh (websocket `BSC_WS_URL`); отменённый реорганизацией лог — `{removed, tx_hash, log_index}` | `node/bsc` (collector-amm-01), таблицы — `docs/bsc-tables.md` |
 
 `ts` — время из Triton (`createdAt`), мс; `recvTs` — время прихода на хаб. Суммы и резервы в `pump_bc` — целые `BigInt`, как в событии.
@@ -28,7 +29,7 @@
 
 - `pump_fun_bc_swaps`, `pump_fun_bc_mints` — все сделки кривой pump.fun (SOL, mayhem, не-SOL) за всю жизнь кривой (с 11.10; раньше SOL — 185 с, mayhem — 10 мин после создания); строка монеты — при создании;
 - `pump_fun_bc_creator_changes` — смена криейтора кривой (событие MigrateBondingCurveCreator; почти всегда — разделение комиссий в первые 2 с);
-- `pump_fun_funding` — фандинг криейтора (первых покупателей) монет SOL, не mayhem, у которых больше 15 сделок — трассировщик Helius, как у трейдера с FETCH_FUNDING_HISTORY=1 (канала нет);
+- `pump_fun_funding` (и канал `funding`) — фандинг криейтора монет SOL, не mayhem: трасса на 3-й сделке, если первые 2 — покупки (Triton RPC, глубина 2) — трассировщик Helius, как у трейдера с FETCH_FUNDING_HISTORY=1 (канала нет);
 - `pump_fun_bc_meta` — метадата монет (SOL, не mayhem), как писал трейдер с LOG_META=1;
 - `four_meme_bc_swaps/tokens`, `flap_bc_swaps/tokens` — как у `node/bsc` (INSERT IGNORE по tx_hash+log_index, при реорганизации — DELETE);
 - `lp_pump_amm_swaps/pools`, `lp_launchlab_swaps/pools`, `lp_meteora_dbc_swaps/pools/completes` — как у `collectors/`.

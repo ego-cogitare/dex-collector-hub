@@ -1,6 +1,6 @@
 /**
  * sol-collector-hub: единая точка между Triton (Yellowstone gRPC) и ботами.
- *  - фандинг кошельков новых монет (Helius) → pump_fun_funding;
+ *  - фандинг криейторов новых монет (Triton RPC; на 3-й сделке, первые 2 — покупки) → канал funding и pump_fun_funding;
  *  - метадата новых монет pump.fun (IPFS) → канал meta и pump_fun_bc_meta;
  *  - BNB Chain: Four.meme и Flap.sh по websocket (src/sources/bsc/);
  *  - один поток gRPC по программам площадок (pump.fun кривая, Raydium LaunchLab, Meteora DBC) + поток pump.fun AMM (миграции и пулы первые 60 мин);
@@ -31,8 +31,8 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
     const hub = createServer();
     /** метадата: по записи создания монеты из pump_bc (источник meta требует pump_bc) */
     const meta = SOURCES.includes('meta') ? require('./sources/pump-meta').createPumpMeta({db, write: WRITE, publish: hub.publish}) : null;
-    /** фандинг: по записям pump_bc (создание и сделки), только запись в pump_fun_funding */
-    const funding = SOURCES.includes('funding') ? require('./sources/pump-funding').createPumpFunding({db, write: WRITE}) : null;
+    /** фандинг: по записям pump_bc (создание и сделки) → канал funding и pump_fun_funding */
+    const funding = SOURCES.includes('funding') ? require('./sources/pump-funding').createPumpFunding({db, write: WRITE, publish: hub.publish}) : null;
     const publish = meta || funding ? (ch, r) => {
         hub.publish(ch, r);
         if (ch !== 'pump_bc') return;
