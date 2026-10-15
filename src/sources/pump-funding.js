@@ -10,7 +10,7 @@
  * RPC: FUNDING_RPC_URL, иначе Triton (https://api.rpcpool.com/<TRITON_ONE_TOKEN>), иначе Helius (HELIUS_API_KEY через запятую).
  * Темп: FUNDING_RPS вызовов/с на адрес (Triton — 40; у бесплатного Helius было 6).
  * Результат: канал funding (боты решают по нему до входа) и строка в pump_fun_funding.
- * Кэш хопов — FUNDING_CACHE_FILE (data/funding_cache.jsonl), копия результатов — FUNDING_OUT_FILE (data/funding_results.jsonl).
+ * Кэш хопов — FUNDING_CACHE_FILE (data/funding_cache.jsonl), в памяти не больше FUNDING_CACHE_MB (150) по оценке; копия результатов — FUNDING_OUT_FILE (data/funding_results.jsonl).
  */
 const fs = require('fs');
 const path = require('path');
@@ -48,6 +48,7 @@ function createPumpFunding({db, write, publish}) {
         maxConcurrentTraces: parseInt(process.env.FUNDING_CONCURRENCY || '16'),
         maxDepth: parseInt(process.env.FETCH_FUNDING_DEPTH || '2'),
         recentInsMode: process.env.FETCH_FUNDING_RECENT === '1' ? 'creator-only' : 'none',
+        cacheMaxMb: parseFloat(process.env.FUNDING_CACHE_MB || '150'),   // бюджет памяти кэшей трассировщика (оценка), вытеснение давно не использованных
         cacheFile: process.env.FUNDING_CACHE_FILE || path.join(dir, 'funding_cache.jsonl'),
         outFile: process.env.FUNDING_OUT_FILE || path.join(dir, 'funding_results.jsonl'),
         onResult: rec => {

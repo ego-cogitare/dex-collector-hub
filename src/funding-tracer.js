@@ -90,6 +90,8 @@ const DEFAULTS = {
                              // кошельков-покупателей — ключевой операторский паттерн
     recentTtlMs: 0,          // повторная встреча = всегда освежить снимок зарядок
     noneTtlMs: 0,            // пустой-на-снимке кошелёк = всегда перепроверить
+    cacheMaxMb: null,        // бюджет памяти кэшей (МБ): хопы 70%, узлы цепочек 15%, кормильцы 15%; вытеснение давно не использованных.
+                             // null — без ограничения (как раньше). Файл кэша при старте и раз в сутки переписывается тем, что осталось в памяти.
     // recentIns (lastFund) — самая дорогая часть трейса (до lastLookup getTransaction на кошелёк).
     // Сайзинг-сигнал lastFund значим только для КРИЕЙТОРА; держателям хватает firstTs/fat-класса.
     // 'creator-only': в traceHolders recentIns собирается только для ПЕРВОГО кошелька массива
@@ -113,6 +115,31 @@ const KNOWN_CEX = new Set([
 ]);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Словарь с бюджетом памяти и вытеснением давно не использованных (LRU).
+ * Точный объём объекта в V8 не измерить — размер записи оценивается (sizeOf), с запасом на накладные расходы.
+ * Map хранит порядок вставки: обращение переносит запись в конец, вытесняются первые.
+ */
+class SizedLru {
+    constructor(budgetBytes, sizeOf) { this.map = new Map(); this.bytes = 0; this.budget = budgetBytes; this.sizeOf = sizeOf; this.evicted = 0; }
+    get size() { return this.map.size; }
+    has(k) { return this.map.has(k); }
+    get(k) { const e = this.map.get(k); if (!e) return undefined; this.map.delete(k); this.map.set(k, e); return e.v; }
+    set(k, v, size = this.sizeOf(k, v)) {
+        const old = this.map.get(k); if (old) { this.bytes -= old.s; this.map.delete(k); }
+        this.map.set(k, {v, s: size}); this.bytes += size; this._evict();
+    }
+    /** запись выросла (например, во множество добавили элемент) */
+    grow(k, delta) { const e = this.map.get(k); if (!e) return; e.s += delta; this.bytes += delta; this._evict(); }
+    delete(k) { const e = this.map.get(k); if (!e) return; this.bytes -= e.s; this.map.delete(k); }
+    entries() { return [...this.map].map(([k, e]) => [k, e.v]); }
+    _evict() {
+        while (this.bytes > this.budget && this.map.size > 1) {
+            const k = this.map.keys().next().value; this.bytes -= this.map.get(k).s; this.map.delete(k); this.evicted++;
+        }
+    }
+}
 
 class FundingTracer {
 
@@ -150,15 +177,22 @@ class FundingTracer {
         this._rpcQueue = [];
         this._tracedPerMint = new Map();                   // mint -> Set(wallet), дедуп вызовов
         this._mintNodes = new Map();                       // mint -> Set(узлы фандинг-сети минта)
-        this._feederKids = new Map();                      // кормилец -> Set(кошельки) для сервис-детекта
+        const mb = this.cfg.cacheMaxMb ? this.cfg.cacheMaxMb * 1048576 : Infinity;
+        /** оценки размера в памяти: строка ~2 байта на символ, запись Map/объекта ~100–200 байт накладных */
+        this._feederKids = new SizedLru(mb * 0.15, () => 200);        // кормилец -> Set(кошельки) для сервис-детекта (каждый кошелёк +150)
         this.rpcCalls = 0;                                 // логических JSON-RPC вызовов
         this.rpcRequests = 0;                              // HTTP-запросов (батч = 1)
         this.rpc429 = 0;                                   // сколько раз словили rate limit
-        this.hopCache = new Map();      // address -> hop result (инвариантные факты)
+        this.hopCache = new SizedLru(mb * 0.7, (k, v) => 200 + 3 * JSON.stringify(v).length);   // address -> hop result (инвариантные факты)
         this.inflight = new Map();      // address -> Promise (дедупликация параллельных запросов)
-        this.nodeIndex = new Set();     // узлы прежних цепочек (cluster-детекция, в памяти процесса)
-        this._loadCache();
+        this.nodeIndex = new SizedLru(mb * 0.15, () => 200);   // узлы прежних цепочек (cluster-детекция, в памяти процесса)
+        const loadedLines = this._loadCache();
+        if (this.cfg.cacheMaxMb && loadedLines > this.hopCache.size) this._rewriteCacheFile();   // в файле было больше, чем осталось в памяти
         this.cacheOut = fs.createWriteStream(this.cfg.cacheFile, { flags: 'a' });
+        if (this.cfg.cacheMaxMb) {
+            this._compactTimer = setInterval(() => this._compactCacheFile().catch(() => {}), 24 * 3600000);
+            this._compactTimer.unref();
+        }
         this.resultOut = this.cfg.onResult ? null : fs.createWriteStream(this.cfg.outFile, { flags: 'a' });
     }
 
@@ -232,7 +266,7 @@ class FundingTracer {
     _noteFeeder(feeder, kid) {
         let kids = this._feederKids.get(feeder);
         if (!kids) { kids = new Set(); this._feederKids.set(feeder, kids); }
-        kids.add(kid);
+        if (!kids.has(kid)) { kids.add(kid); this._feederKids.grow(feeder, 150); }
         return kids.size;
     }
 
@@ -346,11 +380,14 @@ class FundingTracer {
             batchSize: this._batchSize,
             activeTraces: this._tracesActive, queuedTraces: this._traceQueue.length,
             activeRpc: this._rpcActive, queuedRpc: this._rpcQueue.length,
-            cacheSize: this.hopCache.size, nodeIndex: this.nodeIndex.size };
+            cacheSize: this.hopCache.size, nodeIndex: this.nodeIndex.size, feeders: this._feederKids.size,
+            cacheMb: +((this.hopCache.bytes + this.nodeIndex.bytes + this._feederKids.bytes) / 1048576).toFixed(1),
+            cacheEvicted: this.hopCache.evicted + this.nodeIndex.evicted + this._feederKids.evicted };
     }
 
     /** Корректное закрытие стримов (при останове trader.js). */
     async close() {
+        if (this._compactTimer) clearInterval(this._compactTimer);
         await new Promise(r => this.cacheOut.end(r));
         if (this.resultOut) await new Promise(r => this.resultOut.end(r));
     }
@@ -358,9 +395,11 @@ class FundingTracer {
     /** =============== ВНУТРЕННЕЕ =============== */
 
     _loadCache() {
-        if (!fs.existsSync(this.cfg.cacheFile)) return;
+        if (!fs.existsSync(this.cfg.cacheFile)) return 0;
+        let lines = 0;
         for (const line of fs.readFileSync(this.cfg.cacheFile, 'utf8').split('\n')) {
             if (!line.trim()) continue;
+            lines++;
             try {
                 const o = JSON.parse(line);
                 const prev = this.hopCache.get(o.a);
@@ -369,6 +408,22 @@ class FundingTracer {
                 this.hopCache.set(o.a, o.r);
             } catch (e) { /* битые строки игнорируем */ }
         }
+        return lines;
+    }
+
+    /** Файл кэша = содержимое памяти (после вытеснения), через временный файл. */
+    _rewriteCacheFile() {
+        const tmp = this.cfg.cacheFile + '.tmp';
+        fs.writeFileSync(tmp, this.hopCache.entries().map(([a, r]) => JSON.stringify({ a, r })).join('\n') + (this.hopCache.size ? '\n' : ''));
+        fs.renameSync(tmp, this.cfg.cacheFile);
+    }
+
+    /** Раз в сутки: закрыть поток дозаписи, переписать файл, открыть заново. */
+    async _compactCacheFile() {
+        const old = this.cacheOut;
+        this.cacheOut = { write: () => true };            // на время перезаписи новые хопы пишутся только в память
+        await new Promise(r => old.end(r));
+        try { this._rewriteCacheFile(); } finally { this.cacheOut = fs.createWriteStream(this.cfg.cacheFile, { flags: 'a' }); }
     }
 
     _score(r) {
@@ -787,11 +842,11 @@ class FundingTracer {
             });
 
             if (KNOWN_CEX.has(hop.parent)) { terminalType = 'cex'; break; }
-            if (this.nodeIndex.has(hop.parent)) { terminalType = 'cluster'; clusterHit = true; break; }
+            if (this.nodeIndex.get(hop.parent)) { terminalType = 'cluster'; clusterHit = true; break; }   // get — с обновлением «свежести»
             addr = hop.parent;
         }
 
-        for (const h of chain) { this.nodeIndex.add(h.wallet); this.nodeIndex.add(h.parent); }
+        for (const h of chain) { this.nodeIndex.set(h.wallet, 1); this.nodeIndex.set(h.parent, 1); }
 
         return {
             fundingDepth: chain.length,
