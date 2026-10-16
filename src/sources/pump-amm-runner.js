@@ -109,11 +109,13 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     /** активные пулы: адрес → {mint, quote_mint, until, seen (ключи сделок), sigs (полученные подписи пула), migrationSig, lastSig, backfill} */
     const active = new Map();
     const poolInfo = pool => active.get(pool) || null;
-    /** номера транзакций потока в блоке: подпись → {slot, idx} (опоры для номеров дотянутых); последние ~200 тыс. */
+    /** номера транзакций потока в блоке: подпись → {slot, idx} (опоры для номеров дотянутых); последние ~AMM_TXIDX_KEEP (20 тыс. ≈ 2 мин потока) —
+     *  опоры нужны только у свежих промежутков (миграция и первая сделка пула — секунды назад). 250 тыс. раздували кучу хаба на ~500 МБ (16.10 07:50 — падение по памяти) */
+    const TXIDX_KEEP = Number(process.env.AMM_TXIDX_KEEP || 20000);
     const txIdx = new Map();
     const rememberIdx = (sig, slot, idx) => {
         txIdx.set(sig, {slot, idx});
-        if (txIdx.size > 250000) { let n = 0; for (const k of txIdx.keys()) { txIdx.delete(k); if (++n >= 50000) break; } }
+        if (txIdx.size > TXIDX_KEEP * 1.2) { let n = 0; const drop = txIdx.size - TXIDX_KEEP; for (const k of txIdx.keys()) { txIdx.delete(k); if (++n >= drop) break; } }
     };
 
     /** транзакция (поток или RPC) → пулы и сделки; src 0 — поток, 1 — RPC; txIndex — порядок в блоке (у потока — из gRPC) */
