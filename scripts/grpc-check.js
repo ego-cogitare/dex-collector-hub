@@ -30,6 +30,7 @@ const q = (a, p) => a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length)
     const d = diff.sort((x, y) => x - y), only = {triton: 0, other: 0}; for (const v of Object.values(seen)) only[v.k]++;
     console.log(`одна и та же транзакция: приход с узла минус приход с Triton (мс, > 0 — Triton раньше), общих ${d.length}: p10 ${q(d, .1)} p25 ${q(d, .25)} p50 ${q(d, .5)} p75 ${q(d, .75)} p90 ${q(d, .9)} p99 ${q(d, .99)}`);
     console.log(`только с Triton ${only.triton}, только с узла ${only.other} (последние секунды окна — частично в пути)`);
+    console.log(`хвост: максимум +${d.at(-1)} мс, позже Triton > 250 мс — ${d.filter(x => x > 250).length}, > 500 мс — ${d.filter(x => x > 500).length}, > 1 с — ${d.filter(x => x > 1000).length} из ${d.length}; узел раньше Triton на > 250 мс — ${d.filter(x => x < -250).length}`);
     streams.forEach(s => { try { s.destroy(); } catch (e) {} });
     // сколько потоков одновременно
     const held = [];
