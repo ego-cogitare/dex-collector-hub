@@ -135,8 +135,9 @@ class BulkWriter {
  * programs — {имя: programId} или {имя: {accountInclude, accountRequired}} (фильтр транзакций Yellowstone).
  * Неуспешные транзакции не приходят (failed: false). setFilters(programs) — заменить фильтры на лету (новый запрос в тот же поток).
  * onConnect(isReconnect) — после каждого подключения (например, дотянуть пропущенное за время обрыва).
+ * url, token — свой узел gRPC (по умолчанию WS_RPC / TRITON_ONE_TOKEN; у AMM — AMM_GRPC_URL / AMM_GRPC_TOKEN, например Chainstack).
  */
-async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null} = {}) {
+async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null, url = process.env.WS_RPC, token = process.env.TRITON_ONE_TOKEN} = {}) {
     const {default: Client, CommitmentLevel} = require('@triton-one/yellowstone-grpc');
     let last = Date.now(), current = null, stopped = false, connected = false;
     const filter = f => typeof f === 'string' ? {accountInclude: [f], accountExclude: [], accountRequired: [], vote: false, failed: false}
@@ -148,7 +149,7 @@ async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null
     });
     let request = build(programs);
     async function connect() {
-        const client = new Client(process.env.WS_RPC, process.env.TRITON_ONE_TOKEN, {'grpc.keepalive_time_ms': 20000});
+        const client = new Client(url, token, {'grpc.keepalive_time_ms': 20000});
         await client.connect();
         const stream = await client.subscribe();
         current = stream;

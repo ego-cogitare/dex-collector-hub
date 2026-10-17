@@ -3,7 +3,7 @@
  * Перенесено из copy-trade-solana/collectors/amm-run.js; сделки и пулы — в MySQL (если write) и в каналы раздачи pump_amm / pump_amm_pool (publish).
  *   startPumpAmm({db, write, publish})   AMM_WINDOW_MIN=60  AMM_CONFIRM_MS=3000  AMM_FALLBACK_MS=30000
  *
- * Один поток gRPC (наш Triton), два фильтра:
+ * Один поток gRPC (Triton или свой узел AMM_GRPC_URL / AMM_GRPC_TOKEN — Chainstack), два фильтра:
  *   migrate — транзакции, где есть и программа кривой, и программа AMM: CreatePoolEvent → пул активен на окно (пулы, созданные вручную, не пишем);
  *   pools   — адреса активных пулов; при смене списка (не чаще раза в 5 с) открывается новый поток, старый закрывается, когда новый начал отдавать
  *             транзакции (перекрытие без пропуска; замена фильтров в том же потоке теряла сделки на несколько секунд).
@@ -32,6 +32,8 @@ const amm = require('./pump-amm');
 
 const WINDOW_MS = Number(process.env.AMM_WINDOW_MIN || 60) * 60000;
 const HTTP_URL = process.env.AMM_HTTP_RPC || process.env.RPC;   // дотягивание — наш Triton
+/** узел gRPC потока AMM: AMM_GRPC_URL / AMM_GRPC_TOKEN (17.10 — под Chainstack: на тарифе 2 потока, ровно столько AMM держит при смене списка пулов); не заданы — Triton (WS_RPC) */
+const GRPC_URL = process.env.AMM_GRPC_URL || process.env.WS_RPC, GRPC_TOKEN = process.env.AMM_GRPC_URL ? process.env.AMM_GRPC_TOKEN : process.env.TRITON_ONE_TOKEN;
 const CONFIRM_MS = Number(process.env.AMM_CONFIRM_MS || 3000);     // RPC узнаёт подпись после подтверждения — ждём перед запросом
 const FALLBACK_MS = Number(process.env.AMM_FALLBACK_MS || 30000);  // сделок из потока нет — дотягиваем по таймеру
 const MAX_PAGES = 50;
@@ -271,7 +273,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         let firstData = null;
         const got = new Promise(r => { firstData = r; });
         const st = await streamPrograms(filters(), d => { firstData(); onTx(d); },
-            {stallMs: 120000, onConnect: isReconnect => { if (isReconnect) { stats.reconnects++; scheduleCatchUp(); } }});
+            {stallMs: 120000, url: GRPC_URL, token: GRPC_TOKEN, onConnect: isReconnect => { if (isReconnect) { stats.reconnects++; scheduleCatchUp(); } }});
         return {st, got};
     };
     const refresh = () => {
