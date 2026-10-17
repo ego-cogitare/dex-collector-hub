@@ -27,6 +27,8 @@
  * собирай асинхронно; для мгновенного сайзинга по lastFund хватает { maxDepth: 1 }.
  */
 
+/** ошибка лимита внутри 200 OK: Helius («rate limited», «too many requests»), Chainstack (-32005 «exceeded the RPS limit», 18.10) */
+const isRateError = e => !!e && (e.code === -32005 || e.code === -32429 || /rate|too many|rps|limit/i.test(String(e.message || '')));
 'use strict';
 
 const fs = require('fs');
@@ -592,7 +594,7 @@ class FundingTracer {
                 for (let id = 0; id < pending.length; id++) {
                     const item = byId.get(id);
                     if (item && item.error) {
-                        if (String(item.error.message || '').match(/rate|too many/i)) {
+                        if (isRateError(item.error)) {
                             retry.push(pending[id]);
                         }
                         continue;
@@ -638,7 +640,7 @@ class FundingTracer {
                 }
                 const j = await res.json();
                 /** Rate-error может приехать и внутри 200 OK — это тоже 429 по смыслу */
-                if (!Array.isArray(j) && j.error && String(j.error.message || '').match(/rate|too many/i)) {
+                if (!Array.isArray(j) && j.error && isRateError(j.error)) {
                     this.rpc429++;
                     this._penalizeKey(index, null);
                     lastErr = new Error(j.error.message);
@@ -689,7 +691,7 @@ class FundingTracer {
         for (let i = 0; i < cand.length && out.length < this.cfg.lastKeep; i += chunk) {
             const txs = await this._rpcBatch(cand.slice(i, i + chunk).map(s => ({
                 method: 'getTransaction',
-                params: [s.signature, { maxSupportedTransactionVersion: 0, encoding: 'jsonParsed' }],
+                params: [s.signature, { maxSupportedTransactionVersion: 1, encoding: 'jsonParsed' }],
             })));
             for (const tx of txs) {
                 if (out.length >= this.cfg.lastKeep) break;
@@ -775,7 +777,7 @@ class FundingTracer {
             const cand = earliest.filter(s => !s.err);
             const txs = await this._rpcBatch(cand.map(s => ({
                 method: 'getTransaction',
-                params: [s.signature, { maxSupportedTransactionVersion: 0, encoding: 'jsonParsed' }],
+                params: [s.signature, { maxSupportedTransactionVersion: 1, encoding: 'jsonParsed' }],
             })));
             for (const tx of txs) {                       // порядок: от самой ранней
                 if (!tx) continue;
