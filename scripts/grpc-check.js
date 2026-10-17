@@ -15,18 +15,21 @@ async function open([url, token]) { const c = new Client(url, token, {'grpc.keep
 const q = (a, p) => a.length ? a[Math.min(a.length - 1, Math.floor(p * a.length))] : null;
 (async () => {
     if (!nodes.other[0]) throw new Error('нет AMM_GRPC_URL');
-    const seen = {}, lag = {triton: [], other: []}, n = {triton: 0, other: 0}, first = {triton: 0, other: 0}, streams = [];
+    const seen = {}, lag = {triton: [], other: []}, n = {triton: 0, other: 0}, first = {triton: 0, other: 0}, streams = [], diff = [];
     for (const k of Object.keys(nodes)) {
         const s = await open(nodes[k]); streams.push(s);
         s.on('data', d => { if (!d.transaction) return; const now = Date.now(); n[k]++;
             if (d.createdAt) lag[k].push(now - new Date(d.createdAt).getTime());
             const sig = bs58.encode(d.transaction.transaction.signature); const o = seen[sig];
-            if (!o) seen[sig] = {k, t: now}; else if (o.k !== k) { first[o.k]++; o.d = now - o.t; delete seen[sig]; } });
+            if (!o) seen[sig] = {k, t: now}; else if (o.k !== k) { first[o.k]++; diff.push(o.k === 'triton' ? now - o.t : o.t - now); delete seen[sig]; } });
         s.on('error', e => console.log(k, 'ошибка потока:', e.message));
     }
     await new Promise(r => setTimeout(r, SECONDS * 1000));
     for (const k of Object.keys(nodes)) { const a = lag[k].sort((x, y) => x - y);
         console.log(`${k}: сообщений ${n[k]} (${(n[k] / SECONDS).toFixed(0)}/с), createdAt → приход p50 ${q(a, .5)} p90 ${q(a, .9)} p99 ${q(a, .99)} мс${a.length ? '' : ' (createdAt нет)'}, пришло первым ${first[k]}`); }
+    const d = diff.sort((x, y) => x - y), only = {triton: 0, other: 0}; for (const v of Object.values(seen)) only[v.k]++;
+    console.log(`одна и та же транзакция: приход с узла минус приход с Triton (мс, > 0 — Triton раньше), общих ${d.length}: p10 ${q(d, .1)} p25 ${q(d, .25)} p50 ${q(d, .5)} p75 ${q(d, .75)} p90 ${q(d, .9)} p99 ${q(d, .99)}`);
+    console.log(`только с Triton ${only.triton}, только с узла ${only.other} (последние секунды окна — частично в пути)`);
     streams.forEach(s => { try { s.destroy(); } catch (e) {} });
     // сколько потоков одновременно
     const held = [];
