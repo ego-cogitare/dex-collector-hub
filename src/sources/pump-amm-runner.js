@@ -40,22 +40,32 @@ const MAX_PAGES = 50;
 const STALE_MAX = Number(process.env.AMM_STALE_MAX || 50);              // истёкших пулов в фильтре потока — сменить поток без новой миграции
 const STALE_MS = Number(process.env.AMM_STALE_MIN || 15) * 60000;       // … или старейший истёкший висит в фильтре дольше
 
-/** HTTP JSON-RPC: повтор с растущей паузой при 429 и сетевой ошибке */
-async function rpc(method, params, tries = 4) {
-    for (let i = 0; ; i++) {
-        let r;
-        try {
-            r = await fetch(HTTP_URL, {method: 'POST', headers: {'content-type': 'application/json'}, signal: AbortSignal.timeout(30000),
-                body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params})});
-        } catch (e) {
-            if (i < tries) { await new Promise(res => setTimeout(res, 1000 * 2 ** i)); continue; }
-            throw e;
+/** HTTP JSON-RPC: не больше RPC_MAX запросов одновременно (AMM_RPC_MAX, 10); повтор с растущей паузой при 429, сетевой ошибке и превышении лимита
+ *  в теле ответа (Chainstack: -32005 «exceeded the RPS limit», 18.10 — на рестарте хаб дотягивал сотню пулов разом и терял сделки) */
+const RPC_MAX = Number(process.env.AMM_RPC_MAX || 10);
+let rpcBusy = 0; const rpcWait = [];
+const rpcSlot = () => rpcBusy < RPC_MAX ? (rpcBusy++, Promise.resolve()) : new Promise(r => rpcWait.push(r));
+const rpcFree = () => { const next = rpcWait.shift(); if (next) next(); else rpcBusy--; };
+const rateLimited = e => e && (e.code === -32005 || e.code === -32429 || /rate|rps|limit|too many/i.test(e.message || ''));
+async function rpc(method, params, tries = 6) {
+    await rpcSlot();
+    try {
+        for (let i = 0; ; i++) {
+            let r;
+            try {
+                r = await fetch(HTTP_URL, {method: 'POST', headers: {'content-type': 'application/json'}, signal: AbortSignal.timeout(30000),
+                    body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params})});
+            } catch (e) {
+                if (i < tries) { await new Promise(res => setTimeout(res, 500 * 2 ** i)); continue; }
+                throw e;
+            }
+            if (r.status === 429 && i < tries) { await new Promise(res => setTimeout(res, 500 * 2 ** i)); continue; }
+            const j = await r.json();
+            if (j.error && rateLimited(j.error) && i < tries) { await new Promise(res => setTimeout(res, 500 * 2 ** i)); continue; }
+            if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error)}`);
+            return j.result;
         }
-        if (r.status === 429 && i < tries) { await new Promise(res => setTimeout(res, 1000 * 2 ** i)); continue; }
-        const j = await r.json();
-        if (j.error) throw new Error(`${method}: ${JSON.stringify(j.error)}`);
-        return j.result;
-    }
+    } finally { rpcFree(); }
 }
 
 /** Транзакция из RPC (getTransaction, encoding json) → форма gRPC, которую понимают txMeta / allInstructions / decode */
