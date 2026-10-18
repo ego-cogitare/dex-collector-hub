@@ -43,6 +43,8 @@ const STALE_MS = Number(process.env.AMM_STALE_MIN || 15) * 60000;       // … �
 /** HTTP JSON-RPC: не больше RPC_MAX запросов одновременно (AMM_RPC_MAX, 10); повтор с растущей паузой при 429, сетевой ошибке и превышении лимита
  *  в теле ответа (Chainstack: -32005 «exceeded the RPS limit», 18.10 — на рестарте хаб дотягивал сотню пулов разом и терял сделки) */
 const RPC_MAX = Number(process.env.AMM_RPC_MAX || 10);
+/** AMM_BACKFILL=0 — не дотягивать пропуски через RPC (18.10: после ночи без записи рестарт дотягивал часы истории по всем пулам и выедал квоту RPC) */
+const NO_BACKFILL = process.env.AMM_BACKFILL === '0';
 let rpcBusy = 0; const rpcWait = [];
 const rpcSlot = () => rpcBusy < RPC_MAX ? (rpcBusy++, Promise.resolve()) : new Promise(r => rpcWait.push(r));
 const rpcFree = () => { const next = rpcWait.shift(); if (next) next(); else rpcBusy--; };
@@ -228,6 +230,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
 
     /** все подписи пула в промежутке (until, before) постранично → транзакции, которых ещё не видели (от старых к новым) */
     async function gapFill(pool, {until, before, why}) {
+        if (NO_BACKFILL) return;   // AMM_BACKFILL=0 — дотягивание через RPC выключено
         const a = active.get(pool);
         if (!a) return;
         const opts = {limit: 1000, commitment: 'confirmed'};
