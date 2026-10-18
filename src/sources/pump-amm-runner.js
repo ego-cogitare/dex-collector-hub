@@ -343,7 +343,8 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     logger.info(`активных пулов из базы: ${active.size}`);
 
     stream = (await openStream()).st;
-    for (const [p, until] of restored) gapFill(p, {until, why: 'restore'}).catch(e => err(`дотягивание после старта ${p}`, e));
+    /** AMM_BACKFILL_RESTORE=0 — не дотягивать историю пулов после старта процесса (18.10: после ночи без записи в MySQL — часы истории, ~5 900 запросов/мин подряд) */
+    if (process.env.AMM_BACKFILL_RESTORE !== '0') for (const [p, until] of restored) gapFill(p, {until, why: 'restore'}).catch(e => err(`дотягивание после старта ${p}`, e));
 
     /** просроченные пулы (окно + 30 с) — пишутся дальше и уходят при следующей смене потока (новая миграция);
      *  свою смену потока — только если истёкших много или старейший истёк давно */
