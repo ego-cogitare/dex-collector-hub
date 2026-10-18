@@ -50,12 +50,16 @@ const NO_BACKFILL = process.env.AMM_BACKFILL === '0';
 let rpcBusy = 0; const rpcWait = [];
 const rpcSlot = () => rpcBusy < RPC_MAX ? (rpcBusy++, Promise.resolve()) : new Promise(r => rpcWait.push(r));
 const rpcFree = () => { const next = rpcWait.shift(); if (next) next(); else rpcBusy--; };
+/** AMM_RPC_RPS — не больше N запросов в секунду, ровным темпом (18.10: Chainstack Growth — 250/с на тариф, общий с трассировщиком фандинга 25/с → 200) */
+const RPC_RPS = Number(process.env.AMM_RPC_RPS || 0); let rpcNextAt = 0;
+const rpcPace = () => { if (!RPC_RPS) return null; const now = Date.now(), at = Math.max(now, rpcNextAt); rpcNextAt = at + 1000 / RPC_RPS; return at > now ? new Promise(r => setTimeout(r, at - now)) : null; };
 const rateLimited = e => e && (e.code === -32005 || e.code === -32429 || /rate|rps|limit|too many/i.test(e.message || ''));
 async function rpc(method, params, tries = 6) {
     await rpcSlot();
     try {
         for (let i = 0; ; i++) {
             let r;
+            const pace = rpcPace(); if (pace) await pace;
             try {
                 r = await fetch(HTTP_URL, {method: 'POST', headers: {'content-type': 'application/json'}, signal: AbortSignal.timeout(30000),
                     body: JSON.stringify({jsonrpc: '2.0', id: 1, method, params})});
