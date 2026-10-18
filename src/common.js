@@ -137,9 +137,9 @@ class BulkWriter {
  * onConnect(isReconnect) — после каждого подключения (например, дотянуть пропущенное за время обрыва).
  * url, token — свой узел gRPC (по умолчанию WS_RPC / TRITON_ONE_TOKEN; у AMM — AMM_GRPC_URL / AMM_GRPC_TOKEN, например Chainstack).
  */
-async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null, url = process.env.WS_RPC, token = process.env.TRITON_ONE_TOKEN} = {}) {
+async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null, url = process.env.WS_RPC, token = process.env.TRITON_ONE_TOKEN, pool = null} = {}) {
     const {default: Client, CommitmentLevel} = require('@triton-one/yellowstone-grpc');
-    let last = Date.now(), current = null, stopped = false, connected = false;
+    let last = Date.now(), current = null, stopped = false, connected = false, fails = 0, connectedAt = 0;
     const filter = f => typeof f === 'string' ? {accountInclude: [f], accountExclude: [], accountRequired: [], vote: false, failed: false}
         : {accountInclude: f.accountInclude || [], accountExclude: [], accountRequired: f.accountRequired || [], vote: false, failed: false};
     const build = p => ({
@@ -148,16 +148,30 @@ async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null
         commitment: CommitmentLevel.PROCESSED, includeTransactions: true, includeAccounts: false, includeEntries: false,
     });
     let request = build(programs);
+    /** pool (grpcPool) — общее соединение и потолок одновременных потоков; без него — своё соединение на каждое подключение (Triton, как раньше) */
+    const getClient = async () => { if (pool) return pool.get(); const c = new Client(url, token, {'grpc.keepalive_time_ms': 20000}); await c.connect(); return c; };
+    /** закрыть текущий поток и вернуть место под потолком */
+    const closeCurrent = () => {
+        const st = current; current = null;
+        if (!st) return;
+        try { st.removeAllListeners('data'); st.destroy(); } catch (e) {}
+        if (pool) pool.release();
+    };
     async function connect() {
-        const client = new Client(url, token, {'grpc.keepalive_time_ms': 20000});
-        await client.connect();
-        const stream = await client.subscribe();
-        current = stream;
-        stream.on('data', d => { last = Date.now(); if (d.transaction) { try { onTx(d, d.filters || []); } catch (e) { logger.error(e.stack || e.message); } } });
-        stream.on('error', e => { logger.error('поток', e.message); reconnect('ошибка'); });
-        stream.on('end', () => reconnect('конец потока'));
+        if (stopped) return;
+        if (pool && !pool.acquire()) throw new Error(`потолок потоков ${pool.max}: открыто ${pool.open}`);
+        let stream;
+        try {
+            const client = await getClient();
+            stream = await client.subscribe();
+        } catch (e) { if (pool) { pool.release(); pool.broken(); } throw e; }
+        if (stopped) { try { stream.destroy(); } catch (e) {} if (pool) pool.release(); return; }   // остановили, пока подключались
+        current = stream; connectedAt = Date.now();
+        stream.on('data', d => { last = Date.now(); if (fails && last - connectedAt > 30000) fails = 0; if (d.transaction) { try { onTx(d, d.filters || []); } catch (e) { logger.error(e.stack || e.message); } } });
+        stream.on('error', e => { if (current !== stream) return; logger.error('поток', e.message); if (pool) pool.broken(); reconnect('ошибка'); });
+        stream.on('end', () => { if (current === stream) reconnect('конец потока'); });
         await new Promise((resolve, reject) => stream.write(request, e => e ? reject(e) : resolve()));
-        logger.info(`подписка: ${Object.keys(request.transactions).join(', ')}`);
+        logger.info(`подписка: ${Object.keys(request.transactions).join(', ')}${pool ? ` (потоков ${pool.open}/${pool.max})` : ''}`);
         if (onConnect) { try { onConnect(connected); } catch (e) { logger.error('onConnect', e.message); } }
         connected = true;
     }
@@ -166,17 +180,20 @@ async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null
         if (reconnecting || stopped) return;
         reconnecting = true;
         logger.warn(`переподключение (${why})`);
-        try { current && current.destroy && current.destroy(); } catch (e) {}
-        for (let i = 0; ; i++) {
-            await new Promise(r => setTimeout(r, Math.min(30000, 1000 * 2 ** i)));
-            try { await connect(); last = Date.now(); break; } catch (e) { logger.error('подключение', e.message); }
+        closeCurrent();
+        /** пауза растёт и через переподключения, пока поток не проживёт 30 с с данными (18.10: узел принимал подписку и тут же рвал — переподключение раз в секунду) */
+        for (let i = 0; !stopped; i++) {
+            fails++;
+            await new Promise(r => setTimeout(r, Math.min(30000, 1000 * 2 ** (fails - 1))));
+            if (stopped) break;   // остановленный поток не переподключается (18.10: «зомби» после смены подписки держали лишние потоки)
+            try { closeCurrent(); await connect(); last = Date.now(); break; } catch (e) { logger.error('подключение', e.message); }
         }
         reconnecting = false;
     }
-    setInterval(() => { if (Date.now() - last > stallMs) reconnect(`тишина ${Math.round((Date.now() - last) / 1000)} с`); }, 10000);
-    await connect();
+    const timer = setInterval(() => { if (!stopped && Date.now() - last > stallMs) reconnect(`тишина ${Math.round((Date.now() - last) / 1000)} с`); }, 10000);
+    try { await connect(); } catch (e) { stopped = true; clearInterval(timer); closeCurrent(); throw e; }
     return {
-        stop() { stopped = true; try { current && current.destroy && current.destroy(); } catch (e) {} },
+        stop() { stopped = true; clearInterval(timer); closeCurrent(); },
         /** новые фильтры: сразу в текущий поток и для будущих переподключений */
         setFilters(p) {
             request = build(p);
@@ -185,4 +202,24 @@ async function streamPrograms(programs, onTx, {stallMs = 60000, onConnect = null
     };
 }
 
-module.exports = {allKeys, allInstructions, anchorEvents, Reader, txMeta, BulkWriter, streamPrograms, EVENT_IX_TAG, logger};
+/** Общее соединение gRPC с потолком одновременных потоков (Chainstack: 2 на тарифе — 1 постоянный + 1 на время смены/переподключения, 18.10).
+ *  get() — подключённый Client (одно соединение на все потоки); broken() — соединение умерло, следующее get() создаст новое;
+ *  acquire()/release() — учёт открытых потоков (streamPrograms с этим pool не откроет больше max). */
+function grpcPool(url, token, max = 2) {
+    const {default: Client} = require('@triton-one/yellowstone-grpc');
+    let client = null, connecting = null, open = 0;
+    return {
+        max, get open() { return open; },
+        acquire() { if (open >= max) return false; open++; return true; },
+        release() { open = Math.max(0, open - 1); },
+        broken() { client = null; connecting = null; },
+        get() {
+            if (client) return Promise.resolve(client);
+            if (!connecting) connecting = (async () => { const c = new Client(url, token, {'grpc.keepalive_time_ms': 20000}); await c.connect(); client = c; return c; })()
+                .catch(e => { connecting = null; throw e; });
+            return connecting;
+        },
+    };
+}
+
+module.exports = {allKeys, allInstructions, anchorEvents, Reader, txMeta, BulkWriter, streamPrograms, grpcPool, EVENT_IX_TAG, logger};

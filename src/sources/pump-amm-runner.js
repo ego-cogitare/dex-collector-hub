@@ -27,13 +27,15 @@
  * Окно — от миграции; после него пул пишется до ближайшей смены потока. Раз в минуту — {amm: …}: сделок за минуту, из них дотянуто (и доля), вызовов RPC; доля > 10% — предупреждение.
  */
 const bs58 = require('bs58').default;
-const {txMeta, BulkWriter, streamPrograms, logger} = require('../common');
+const {txMeta, BulkWriter, streamPrograms, grpcPool, logger} = require('../common');
 const amm = require('./pump-amm');
 
 const WINDOW_MS = Number(process.env.AMM_WINDOW_MIN || 60) * 60000;
 const HTTP_URL = process.env.AMM_HTTP_RPC || process.env.RPC;   // дотягивание — наш Triton
 /** узел gRPC потока AMM: AMM_GRPC_URL / AMM_GRPC_TOKEN (17.10 — под Chainstack: на тарифе 2 потока, ровно столько AMM держит при смене списка пулов); не заданы — Triton (WS_RPC) */
 const GRPC_URL = process.env.AMM_GRPC_URL || process.env.WS_RPC, GRPC_TOKEN = process.env.AMM_GRPC_URL ? process.env.AMM_GRPC_TOKEN : process.env.TRITON_ONE_TOKEN;
+/** одно соединение и не больше AMM_GRPC_MAX_STREAMS (2) потоков: 1 постоянный + 1 на время смены списка пулов / переподключения (18.10) */
+const GRPC = grpcPool(GRPC_URL, GRPC_TOKEN, Number(process.env.AMM_GRPC_MAX_STREAMS || 2));
 const CONFIRM_MS = Number(process.env.AMM_CONFIRM_MS || 3000);     // RPC узнаёт подпись после подтверждения — ждём перед запросом
 const FALLBACK_MS = Number(process.env.AMM_FALLBACK_MS || 30000);  // сделок из потока нет — дотягиваем по таймеру
 const MAX_PAGES = 50;
@@ -286,7 +288,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         let firstData = null;
         const got = new Promise(r => { firstData = r; });
         const st = await streamPrograms(filters(), d => { firstData(); onTx(d); },
-            {stallMs: 120000, url: GRPC_URL, token: GRPC_TOKEN, onConnect: isReconnect => { if (isReconnect) { stats.reconnects++; scheduleCatchUp(); } }});
+            {stallMs: Number(process.env.AMM_STALL_MS || 15000), pool: GRPC, onConnect: isReconnect => { if (isReconnect) { stats.reconnects++; scheduleCatchUp(); } }});
         return {st, got};
     };
     const refresh = () => {
@@ -295,14 +297,16 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         if (refreshTimer) return;
         refreshTimer = setTimeout(async () => {
             refreshTimer = null; switching = true;
+            let retry = false;
             try {
-                const next = await openStream();
-                await Promise.race([next.got, new Promise(r => setTimeout(r, 20000))]);
-                const old = stream; stream = next.st; old.stop();
-                stats.filterUpdates++;
-            } catch (e) { err('смена подписки', e); }
+                const next = await openStream();   // при занятом потолке потоков — исключение, прежний поток работает дальше
+                const ok = await Promise.race([next.got.then(() => true), new Promise(r => setTimeout(() => r(false), 20000))]);
+                if (ok) { const old = stream; stream = next.st; old.stop(); stats.filterUpdates++; }
+                else { next.st.stop(); retry = true; err('смена подписки', new Error('новый поток 20 с без данных — оставлен прежний')); }
+            } catch (e) { retry = true; err('смена подписки', e); }
             switching = false;
             if (refreshAgain) { refreshAgain = false; refresh(); }
+            else if (retry) setTimeout(refresh, 30000);   // не чаще раза в 30 с, пока узел отказывает
         }, 5000);
     };
 
@@ -353,7 +357,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         prev = {...stats};
         const share = d.swaps ? +(d.backfilled / d.swaps * 100).toFixed(1) : 0;
         const line = {swapsMin: d.swaps, backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
-            filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size,
+            filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size, grpcStreams: GRPC.open,
             backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors}};
         for (const k in bfWhy) delete bfWhy[k];
         if (share > 10 && d.swaps > 50) logger.warn({amm: 'много дотянуто', ...line}); else logger.info({amm: line});
