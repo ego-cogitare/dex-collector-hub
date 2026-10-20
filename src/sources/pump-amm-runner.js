@@ -284,8 +284,11 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         if (active.size) f.pools = {accountInclude: [...active.keys()]};
         return f;
     };
-    /** Смена списка пулов — новым потоком с перекрытием: старый закрывается, когда из нового пришла первая транзакция (или через 20 с).
-     *  Замена фильтров в том же потоке (setFilters) теряла сделки на несколько секунд. Повторы из двух потоков отсекаются по подписи. */
+    /** Смена списка пулов — новым потоком с перекрытием: старый закрывается через AMM_SWITCH_OVERLAP_MS (10 с) после первой транзакции из нового (или новый — через 20 с без данных).
+     *  Замена фильтров в том же потоке (setFilters) теряла сделки на несколько секунд. Повторы из двух потоков отсекаются по подписи.
+     *  20.10: закрытие старого сразу после первой транзакции нового теряло сделки, ещё не отданные отстающим старым потоком (новый начинает с текущего слота) —
+     *  продажа красавца в пуле Fndy2d… 18:13:52 UTC пропала (смена потока 18:13:57), бот вошёл, считая его в позиции. */
+    const SWITCH_OVERLAP_MS = Number(process.env.AMM_SWITCH_OVERLAP_MS || 10000);
     let stream = null, refreshTimer = null, switching = false, refreshAgain = false;
     const onTx = d => { stats.grpcTx++; try { handleTx(d, 0); } catch (e) { err('транзакция', e); } };
     const openStream = async () => {
@@ -305,7 +308,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             try {
                 const next = await openStream();   // при занятом потолке потоков — исключение, прежний поток работает дальше
                 const ok = await Promise.race([next.got.then(() => true), new Promise(r => setTimeout(() => r(false), 20000))]);
-                if (ok) { const old = stream; stream = next.st; old.stop(); stats.filterUpdates++; }
+                if (ok) { const old = stream; stream = next.st; stats.filterUpdates++; await new Promise(r => setTimeout(r, SWITCH_OVERLAP_MS)); old.stop(); }
                 else { next.st.stop(); retry = true; err('смена подписки', new Error('новый поток 20 с без данных — оставлен прежний')); }
             } catch (e) { retry = true; err('смена подписки', e); }
             switching = false;
