@@ -290,7 +290,8 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
      *  продажа красавца в пуле Fndy2d… 18:13:52 UTC пропала (смена потока 18:13:57), бот вошёл, считая его в позиции. */
     const SWITCH_OVERLAP_MS = Number(process.env.AMM_SWITCH_OVERLAP_MS || 10000);
     let stream = null, refreshTimer = null, switching = false, refreshAgain = false;
-    const onTx = d => { stats.grpcTx++; try { handleTx(d, 0); } catch (e) { err('транзакция', e); } };
+    const hidden = require('../hidden-sink');   // «скрытые» движения SOL — общий отправитель с основным потоком (повторы по подписи отсекаются)
+    const onTx = d => { stats.grpcTx++; try { handleTx(d, 0); } catch (e) { err('транзакция', e); } if (hidden.ON) setImmediate(() => hidden.push(d)); };
     const openStream = async () => {
         let firstData = null;
         const got = new Promise(r => { firstData = r; });
