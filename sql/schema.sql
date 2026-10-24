@@ -1,3 +1,4 @@
+-- Схема MySQL хаба (справочно). Хаб её НЕ применяет при старте (24.10) — накатывать вручную: mysql -h … -u … -p dex < sql/schema.sql
 -- Таблицы коллекторов площадок запуска (collectors/). Временное хранилище: collectors/export.js переносит строки
 -- в parquet (swaps/<площадка>/…: launchlab, meteora-dbc, pump.fun-amm) и удаляет их из MySQL. Суммы и резервы — сырые целые из событий (DECIMAL), без деления на разряды.
 -- ts / created_at_ms — время прихода транзакции из gRPC (мс), slot — слот транзакции.
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS lp_pump_amm_pools (
   UNIQUE KEY lp_pump_amm_pools_pool (pool)
 ) ENGINE=InnoDB COMMENT='пулы pump.fun AMM, созданные миграцией с кривой pump.fun';
 
--- 24.10: для существующей базы — ALTER TABLE lp_pump_amm_pools ADD COLUMN virtual_quote_reserves BIGINT UNSIGNED NULL (без точки с запятой внутри строк: файл режется по ней)
+-- 24.10: для существующей базы — ALTER TABLE lp_pump_amm_pools ADD COLUMN virtual_quote_reserves BIGINT UNSIGNED NULL
 -- pump.fun bonding curve (как в copy-trade-solana: пишет sandbox/trader.js при LOG_SWAPS_HISTORY=1, выгружает simulation/export/dataset.parquet.js)
 CREATE TABLE IF NOT EXISTS `pump_fun_bc_swaps` (
   `id` int(10) unsigned NOT NULL AUTO_INCREMENT,

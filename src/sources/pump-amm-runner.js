@@ -124,7 +124,7 @@ function hasAmmEvent(t) {
     return false;
 }
 
-/** Запуск на пуле MySQL db (таблицы уже созданы по schema.sql); write = false — без записи в MySQL (база нужна для восстановления пулов);
+/** Запуск на пуле MySQL db (таблицы уже созданы по sql/schema.sql — вручную); write = false — без записи в MySQL (база нужна для восстановления пулов);
  *  publish(channel, record) — раздача. Возвращает {stop()} — отписка и запись буферов */
 async function startPumpAmm({db, write = true, publish = () => {}}) {
     const swapsW = new BulkWriter(db, 'lp_pump_amm_swaps', [...amm.SWAP_COLUMNS, 'src'], {size: 500, skipDuplicates: true});

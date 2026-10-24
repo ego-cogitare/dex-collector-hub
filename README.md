@@ -34,7 +34,7 @@
 - `four_meme_bc_swaps/tokens`, `flap_bc_swaps/tokens` — как у `node/bsc` (INSERT IGNORE по tx_hash+log_index, при реорганизации — DELETE);
 - `lp_pump_amm_swaps/pools`, `lp_launchlab_swaps/pools`, `lp_meteora_dbc_swaps/pools/completes` — как у `collectors/`.
 
-Таблицы создаются при старте (`schema.sql`, `CREATE TABLE IF NOT EXISTS`).
+Таблицы при старте не создаются: схема — `sql/schema.sql`, накатывается вручную (`mysql … < sql/schema.sql`); изменения существующих таблиц — отдельными `ALTER`.
 
 ## Протокол раздачи
 

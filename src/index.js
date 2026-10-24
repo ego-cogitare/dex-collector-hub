@@ -10,8 +10,6 @@
  *   node src/index.js          SOURCES=pump_bc,pump_amm,launchlab,meteora_dbc   DB_WRITE=1   HUB_PORT=7710
  */
 require('dotenv').config({path: require('path').join(__dirname, '../.env'), quiet: true});
-const fs = require('fs');
-const path = require('path');
 const mysql = require('mysql2/promise');
 const {monitorEventLoopDelay} = require('perf_hooks');
 const {txMeta, BulkWriter, streamPrograms, logger} = require('./common');
@@ -30,7 +28,7 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
 (async () => {
     const db = mysql.createPool({host: process.env.MYSQL_HOST, user: process.env.MYSQL_USERNAME, password: process.env.MYSQL_PASSWORD,
         database: process.env.MYSQL_DATABASE, connectionLimit: 6, charset: 'utf8mb4'});
-    if (WRITE) for (const stmt of fs.readFileSync(path.join(__dirname, '../schema.sql'), 'utf8').replace(/^--.*$/gm, '').split(';').map(s => s.trim()).filter(Boolean)) await db.query(stmt);
+    // таблицы MySQL при старте не создаются и не меняются (24.10): схема — sql/schema.sql, накатывается вручную
 
     const hub = createServer();
     /** метадата: по записи создания монеты из pump_bc (источник meta требует pump_bc) */
