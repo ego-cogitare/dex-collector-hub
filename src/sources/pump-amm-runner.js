@@ -311,7 +311,10 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         for (const p of stale.keys()) { const a = active.get(p); if (a) clearTimeout(a.fallbackTimer); active.delete(p); }
         stale.clear();
         const f = {migrate: {accountRequired: [amm.BONDING_CURVE, amm.PROGRAM]}};
-        if (active.size) f.pools = {accountInclude: [...active.keys()]};
+        /** 24.10: Chainstack не принимает > 200 аккаунтов в одном фильтре (с 16:24 UTC, когда пулов в окне 300 мин стало 201, каждая смена подписки падала
+         *  «stream receive failed», новые пулы не подписывались) — пулы делим на фильтры по AMM_POOLS_CHUNK (150) */
+        const CH = Number(process.env.AMM_POOLS_CHUNK || 150), ps = [...active.keys()];
+        for (let i = 0; i < ps.length; i += CH) f[i ? `pools${i / CH}` : 'pools'] = {accountInclude: ps.slice(i, i + CH)};
         return f;
     };
     /** Смена списка пулов — новым потоком с перекрытием: старый закрывается через AMM_SWITCH_OVERLAP_MS (10 с) после первой транзакции из нового (или новый — через 20 с без данных).

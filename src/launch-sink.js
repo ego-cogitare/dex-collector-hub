@@ -1,6 +1,7 @@
 /**
  * Запуски монет pump.fun (SOL-кривая, не mayhem) → кластеры создателей в сборщике переводов copy-trade-solana (tools/creator-clusters.js):
  * POST LAUNCHES_URL (http://10.156.0.18:7730/launches) пачками раз в LAUNCHES_FLUSH_MS (300). Дев — первый покупатель в транзакции создания (как в симе).
+ * С 24.10 в запуске и создатель монеты (поле creator события) — сборщик склеивает его с девом, пока у создателя один покупатель.
  * LAUNCHES=0 — выключено. Боты спрашивают /launch?mint= (prior = 0 — новый кластер).
  * «Почерк» (бумажный режим, tools/pocherk.js сборщика): путь цены каждого такого запуска — состояние кривой (vsr SOL, vtr токенов) по последней сделке ≤ t0 + k·250 мс,
  * k = 0…144 (до 36 с; t0 — первая сделка монеты, как в симе); через PATHS_AFTER_MS (37 000) от первой сделки — POST PATHS_URL (…/paths). PATHS=0 — выключено.
@@ -38,7 +39,7 @@ function onPumpBc(r) {
     S.creates++;
     const sw = r.swaps || [];
     const s = sw.find(x => x.mint && !x.mayhem_mode && (!x.quote_mint || x.quote_mint === WSOL));
-    if (s && s.user) { buf.push({mint: s.mint, dev: s.user, t0: r.ts}); trackStart(s.mint, r.ts); trackSwaps(r); return; }
+    if (s && s.user) { buf.push({mint: s.mint, dev: s.user, creator: s.creator || null, t0: r.ts}); trackStart(s.mint, r.ts); trackSwaps(r); return; }
     if (!sw.length) { S.noSwap++; const m = r.tokens && Object.keys(r.tokens)[0]; if (m) pending.set(m, r.ts); return; }
     S.other++;   // mayhem / не SOL — бот их не торгует
 }
@@ -50,7 +51,7 @@ function onSwaps(r) {
     for (const x of r.swaps) {
         const t0 = pending.get(x.mint); if (t0 === undefined || !x.is_buy) continue;
         pending.delete(x.mint);
-        if (!x.mayhem_mode && (!x.quote_mint || x.quote_mint === WSOL)) { buf.push({mint: x.mint, dev: x.user, t0}); S.late++; trackStart(x.mint, r.ts); trackSwaps({ts: r.ts, swaps: [x]}); }
+        if (!x.mayhem_mode && (!x.quote_mint || x.quote_mint === WSOL)) { buf.push({mint: x.mint, dev: x.user, creator: x.creator || null, t0}); S.late++; trackStart(x.mint, r.ts); trackSwaps({ts: r.ts, swaps: [x]}); }
     }
 }
 setInterval(() => { const old = Date.now() - 600000; for (const [m, t] of pending) if (t < old) pending.delete(m); }, 60000).unref();
