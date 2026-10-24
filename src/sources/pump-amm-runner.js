@@ -53,6 +53,16 @@ const rpcFree = () => { const next = rpcWait.shift(); if (next) next(); else rpc
 /** AMM_RPC_RPS — не больше N запросов в секунду, ровным темпом (18.10: Chainstack Growth — 250/с на тариф, общий с трассировщиком фандинга 25/с → 200) */
 const RPC_RPS = Number(process.env.AMM_RPC_RPS || 0); let rpcNextAt = 0;
 const rpcPace = () => { if (!RPC_RPS) return null; const now = Date.now(), at = Math.max(now, rpcNextAt); rpcNextAt = at + 1000 / RPC_RPS; return at > now ? new Promise(r => setTimeout(r, at - now)) : null; };
+/** Виртуальная добавка к SOL-резерву пула (24.10): u64 (лампорты) по смещению 245 аккаунта пула (длина 301) — пулы миграций нового образца торгуются так, будто к балансу
+ *  SOL-счёта прибавлено ~17.58 SOL; события свопа дают реальный баланс без неё. «Сторожевое» значение (> 1e17) — 0; аккаунта нет / короче — null. Как tools/amm-pool-virtual.js. */
+const VQ_OFF = 245, VQ_SENTINEL = 10n ** 17n;
+function parseVirtualQuote(v) {
+    if (!v || !v.data) return null;
+    const b = Buffer.from(v.data[0], 'base64');
+    if (b.length < VQ_OFF + 8) return null;
+    const x = b.readBigUInt64LE(VQ_OFF);
+    return x > VQ_SENTINEL ? 0n : x;
+}
 const rateLimited = e => e && (e.code === -32005 || e.code === -32429 || /rate|rps|limit|too many/i.test(e.message || ''));
 async function rpc(method, params, tries = 6) {
     await rpcSlot();
@@ -125,6 +135,25 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, staleRefreshes: 0, staleSubscribed: 0, errors: 0};
     const bfWhy = {};   // дотянутые сделки по причине: new — первые секунды пула, fallback — нет сделок из потока, reconnect, restore — после старта
     const err = (where, e) => { stats.errors++; if (stats.errors <= 20) logger.error(`${where}: ${e.message || e}`); };
+    /** добавка пула → lp_pump_amm_pools.virtual_quote_reserves: аккаунт читаем после миграции (повторы — пока аккаунт не виден), строку обновляем, когда BulkWriter её записал */
+    const vqStats = {ok: 0, none: 0, fail: 0};
+    const saveVirtualQuote = async pool => {
+        let v; let got = false;
+        for (let i = 0; i < 5 && !got; i++) {
+            try { const r = await rpc('getAccountInfo', [pool, {encoding: 'base64', commitment: 'confirmed'}]); stats.rpcCalls++; if (r?.value) { v = parseVirtualQuote(r.value); got = true; } }
+            catch (e) { if (i === 4) { vqStats.fail++; return err('добавка пула', e); } }
+            if (!got) await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        }
+        if (!got || v === null) { vqStats.none++; return; }
+        for (let i = 0; i < 8; i++) {
+            await new Promise(r => setTimeout(r, i === 0 ? 0 : 5000));
+            try {
+                const [res] = await db.query('UPDATE lp_pump_amm_pools SET virtual_quote_reserves = ? WHERE pool = ?', [v.toString(), pool]);
+                if (res.affectedRows > 0 || res.changedRows > 0) { vqStats.ok++; return; }
+            } catch (e) { vqStats.fail++; return err('добавка пула: запись', e); }
+        }
+        vqStats.fail++; err('добавка пула', new Error(`${pool}: строки пула нет в MySQL 35 с`));
+    };
 
     /** активные пулы: адрес → {mint, quote_mint, until, seen (ключи сделок), sigs (полученные подписи пула), migrationSig, lastSig, backfill} */
     const active = new Map();
@@ -162,6 +191,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             const a = activate(p.pool, {mint: p.mint, quote_mint: p.quote_mint, is_mayhem: p.is_mayhem, createdAt: meta.ts, migrationSig: p.signature});
             if (!a) continue;
             pools.push(p); stats.migrations++;
+            if (write) saveVirtualQuote(p.pool);
             a.fallbackTimer = setTimeout(() => startBackfill(p.pool, {until: p.signature, delay: 0, why: 'fallback'}), FALLBACK_MS);
         }
         for (const s of r.swaps) {
@@ -367,7 +397,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         const share = d.swaps ? +(d.backfilled / d.swaps * 100).toFixed(1) : 0;
         const line = {swapsMin: d.swaps, backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
             filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size, grpcStreams: GRPC.open,
-            backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors}};
+            backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors, virtualQuote: {...vqStats}}};
         for (const k in bfWhy) delete bfWhy[k];
         if (share > 10 && d.swaps > 50) logger.warn({amm: 'много дотянуто', ...line}); else logger.info({amm: line});
     }, 60000);

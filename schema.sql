@@ -92,9 +92,11 @@ CREATE TABLE IF NOT EXISTS lp_pump_amm_pools (
   pool_index INT NULL, base_decimals TINYINT NULL, quote_decimals TINYINT NULL,
   base_amount_in DECIMAL(20,0) NULL, quote_amount_in DECIMAL(20,0) NULL, lp_mint CHAR(44) NULL, is_mayhem TINYINT NULL,
   created_at_ms BIGINT NOT NULL, slot BIGINT NOT NULL, signature CHAR(88) NOT NULL,
+  virtual_quote_reserves BIGINT UNSIGNED NULL COMMENT 'виртуальная добавка к SOL-резерву, лампорты (аккаунт пула, смещение 245), 0 — нет, NULL — не прочитано',
   UNIQUE KEY lp_pump_amm_pools_pool (pool)
 ) ENGINE=InnoDB COMMENT='пулы pump.fun AMM, созданные миграцией с кривой pump.fun';
 
+-- 24.10: для существующей базы — ALTER TABLE lp_pump_amm_pools ADD COLUMN virtual_quote_reserves BIGINT UNSIGNED NULL (без точки с запятой внутри строк: файл режется по ней)
 -- pump.fun bonding curve (как в copy-trade-solana: пишет sandbox/trader.js при LOG_SWAPS_HISTORY=1, выгружает simulation/export/dataset.parquet.js)
 CREATE TABLE IF NOT EXISTS `pump_fun_bc_swaps` (
   `id` int(10) unsigned NOT NULL AUTO_INCREMENT,
