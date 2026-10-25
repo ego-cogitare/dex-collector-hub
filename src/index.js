@@ -77,6 +77,14 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         }
     }, {stallMs: 20000}) : null;
 
+    /** приём от сервисов на этом же сервере (25.10): POST /farm — снимок ферм операторов от сборщика переводов → канал farm. HUB_INGEST_PORT (7711), 0 — выкл. */
+    const INGEST_PORT = +(process.env.HUB_INGEST_PORT ?? 7711);
+    if (INGEST_PORT) require('http').createServer((req, res) => {
+        if (req.method !== 'POST' || req.url !== '/farm') { res.writeHead(404); res.end(); return; }
+        let b = ''; req.on('data', d => { b += d; if (b.length > 2e7) req.destroy(); });
+        req.on('end', () => { try { const x = JSON.parse(b); if (!Array.isArray(x.prob) || !Array.isArray(x.ban)) throw new Error('нет prob / ban'); hub.publish('farm', {epoch: x.epoch, ver: x.ver, prob: x.prob, ban: x.ban, ts: Date.now()}); res.writeHead(200); res.end('{"ok":1}'); }
+            catch (e) { res.writeHead(400); res.end(JSON.stringify({error: e.message})); } });
+    }).listen(INGEST_PORT, process.env.HUB_INGEST_BIND || '127.0.0.1', () => logger.info(`приём: 127.0.0.1:${INGEST_PORT} (POST /farm)`));
     const amm = SOURCES.includes('pump_amm') ? await require('./sources/pump-amm-runner').startPumpAmm({db, write: WRITE, publish}) : null;
     const bh = SOURCES.includes('blockhash') ? require('./sources/blockhash').startBlockhash({publish}) : null;
     /** BNB Chain: Four.meme и Flap.sh (websocket BSC_WS_URL, не Triton) */

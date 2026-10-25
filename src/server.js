@@ -19,7 +19,10 @@ const {compile} = require('./filters');
 
 /** каналы: номер в кадре ↔ имя (номера фиксированы, клиент знает их из welcome) */
 const CHANNELS = ['_ctl', 'pump_bc', 'pump_amm', 'pump_amm_pool', 'launchlab', 'launchlab_pool', 'meteora_dbc', 'meteora_dbc_pool', 'meteora_dbc_complete', 'blockhash',
-    'bsc_four_meme', 'bsc_four_meme_token', 'bsc_flap', 'bsc_flap_token', 'meta', 'funding'];   // новые — только в конец (номер канала = индекс)
+    'bsc_four_meme', 'bsc_four_meme_token', 'bsc_flap', 'bsc_flap_token', 'meta', 'funding', 'farm'];   // новые — только в конец (номер канала = индекс)
+/** farm — состояние ферм операторов (сборщик переводов → POST 127.0.0.1:HUB_INGEST_PORT/farm): полный снимок {epoch, ver, prob: [кошельки], ban: [[кошелёк, до]]};
+ *  в кольце — несколько последних снимков, новому подписчику — сразу последний */
+const RING_LIMIT = {farm: 5};
 const CH_ID = Object.fromEntries(CHANNELS.map((c, i) => [c, i]));
 const packr = new Packr({useRecords: false, int64AsType: 'bigint', useBigIntExtension: false});
 
@@ -67,6 +70,8 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
             /** blockhash: новому клиенту сразу последние хэши (без них он не может подписывать транзакции до следующей смены хэша) */
             const bh = CH_ID.blockhash;
             if (c.subs.has(bh) && !(hello.resume && hello.resume.blockhash)) for (const [, b] of rings[bh].slice(-30)) sock.write(b);
+            const fm = CH_ID.farm;
+            if (c.subs.has(fm) && rings[fm].length && !(hello.resume && hello.resume.farm)) sock.write(rings[fm][rings[fm].length - 1][1]);
             c.ready = true; clients.add(c); stats.clientsTotal++;
             logger.info(`клиент ${c.name} (${c.addr}) подписан: ${[...c.subs].map(i => CHANNELS[i]).join(', ')}${hello.subscribe ? ' ' + JSON.stringify(hello.subscribe) : ''}`);
         });
@@ -82,7 +87,7 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
     function publish(channel, record) {
         const id = CH_ID[channel]; if (!id) return;
         const n = ++seq[id], b = frame(1, id, n, record);
-        const r = rings[id]; r.push([n, b, record]); if (r.length > ring) r.shift();
+        const r = rings[id]; r.push([n, b, record]); if (r.length > (RING_LIMIT[channel] || ring)) r.shift();
         stats.published++;
         for (const c of clients) {
             const f = c.filters.get(id); if (!f) continue;
