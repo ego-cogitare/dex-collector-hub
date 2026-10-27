@@ -9,6 +9,8 @@
  *   hub.on('down', ms => ...);                    // хаба нет дольше silenceMs: бот не входит в новые позиции, клиент сам переподключается
  *   hub.on('up', () => ...);
  *   hub.connect();
+ *   hub.setAmmPools(['pool…', …]);   // amm_pool: сделки PumpSwap этих пулов (резервы после сделки), список меняется без переподключения
+ *   hub.on('amm_pool', rec => ...);    // {pool, slot, tx, ts, buy, q1, b1, user, sig}
  */
 const net = require('net');
 const {EventEmitter} = require('events');
@@ -22,7 +24,7 @@ class HubClient extends EventEmitter {
         Object.assign(this, {host, port, name, subscribe, channels, silenceMs, retryMs});
         this.last = {};            // канал → последний номер
         this.names = null;         // номер канала → имя (из welcome)
-        this.lastData = Date.now(); this.down = false; this.stopped = false;
+        this.lastData = Date.now(); this.down = false; this.stopped = false; this.ammPools = [];
         this.watch = setInterval(() => {
             const ms = Date.now() - this.lastData;
             if (ms > this.silenceMs && !this.down) { this.down = true; this.emit('down', ms); if (this.sock) this.sock.destroy(); }
@@ -33,7 +35,7 @@ class HubClient extends EventEmitter {
         const sock = this.sock = net.connect({host: this.host, port: this.port});
         sock.setNoDelay(true);
         let buf = Buffer.alloc(0);
-        sock.on('connect', () => sock.write(JSON.stringify({hello: 1, name: this.name, subscribe: this.subscribe, channels: this.channels, resume: this.last}) + '\n'));
+        sock.on('connect', () => sock.write(JSON.stringify({hello: 1, name: this.name, subscribe: this.subscribe, channels: this.channels, resume: this.last, amm_pools: this.ammPools}) + '\n'));
         sock.on('data', d => {
             this.lastData = Date.now();
             if (this.down) { this.down = false; this.emit('up'); }
@@ -61,6 +63,11 @@ class HubClient extends EventEmitter {
         const retry = () => { if (!this.stopped) setTimeout(() => this.connect(), this.retryMs); };
         sock.on('close', retry);
         sock.on('error', () => {});
+    }
+    /** пулы канала amm_pool: сразу хабу (если соединение есть) и в hello при переподключении */
+    setAmmPools(list) {
+        this.ammPools = [...list];
+        if (this.sock && !this.sock.destroyed && this.sock.writable && !this.sock.connecting) this.sock.write(JSON.stringify({amm_pools: this.ammPools}) + '\n');
     }
     stop() { this.stopped = true; clearInterval(this.watch); if (this.sock) this.sock.destroy(); }
 }

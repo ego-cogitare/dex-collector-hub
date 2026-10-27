@@ -132,7 +132,7 @@ function hasAmmEvent(t) {
 
 /** Запуск на пуле MySQL db (таблицы уже созданы по sql/schema.sql — вручную); write = false — без записи в MySQL (база нужна для восстановления пулов);
  *  publish(channel, record) — раздача. Возвращает {stop()} — отписка и запись буферов */
-async function startPumpAmm({db, write = true, publish = () => {}}) {
+async function startPumpAmm({db, write = true, publish = () => {}, publishPool = null}) {
     const swapsW0 = new BulkWriter(db, 'lp_pump_amm_swaps', [...amm.SWAP_COLUMNS, 'src'], {size: 500, skipDuplicates: true});
     /** AMM_DB_SIG_LEN (27.10, пользователь): в MySQL — первые N символов подписи (12 ≈ 70 бит, как у Bitquery и в parquet; колонка CHAR(12) latin1_bin),
      *  ботам — полная. С укороченной подписью дотягивание после перезапуска не найдёт границу — держать AMM_BACKFILL_RESTORE=0 (с AMM_ALL дотягивания нет) */
@@ -206,6 +206,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             if (!ALL) a.fallbackTimer = setTimeout(() => startBackfill(p.pool, {until: p.signature, delay: 0, why: 'fallback'}), FALLBACK_MS);
         }
         for (const s of r.swaps) {
+            if (publishPool && src === 0) poolSwap(s, txIndex, d.transaction.transaction.meta);
             const a = active.get(s.pool);
             if (!a) { if (ALL && src === 0) { swapsAll({...s, src, tx_index: txIndex}); stats.swapsOther++; } continue; }   // пул в подписке — пишем, в т.ч. после окна (до ближайшей смены потока)
             const key = `${s.signature}:${s.ev_index}`;   // как уникальный ключ в MySQL
@@ -216,6 +217,25 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             /** первая сделка из потока: пропущенное — между миграцией и ней */
             if (src === 0 && !a.backfill) startBackfill(s.pool, {until: a.migrationSig, before: s.signature, delay: CONFIRM_MS, why: 'new'});
         }
+    }
+
+    /** amm_pool (27.10): сделка пула клиентам, которые ждут этот пул (хаб: server.publishPool) — резервы ПОСЛЕ сделки = балансы счетов пула после транзакции
+     *  (postTokenBalances, владелец — пул; резерв в событии равен балансу счёта). Запасной путь — по событию: buy/sell — в пул quote_amount + lp_fee / из пула
+     *  quote_amount − lp_fee; у *_v2 комиссии создателя и buyback остаются на счёте пула до сбора (SweepCreatorFee / SweepProtocolFee) — сверено 27.10 */
+    function poolSwap(s, txIndex, meta) {
+        try {
+            let q1 = null, b1 = null;
+            for (const t of meta?.postTokenBalances || []) {
+                if (t.owner !== s.pool) continue;
+                if (t.mint === s.quote_mint) q1 = BigInt(t.uiTokenAmount.amount); else if (t.mint === s.mint) b1 = BigInt(t.uiTokenAmount.amount);
+            }
+            if (q1 === null || b1 === null) {
+                const q0 = BigInt(s.pool_quote_reserves), b0 = BigInt(s.pool_base_reserves), qa = BigInt(s.quote_amount), ba = BigInt(s.base_amount), lp = BigInt(s.lp_fee || 0);
+                const kept = /_v2$/.test(s.ix_name || '') ? BigInt(s.coin_creator_fee || 0) + BigInt(s.buyback_fee || 0) : 0n;
+                q1 = s.is_buy ? q0 + qa + lp + kept : q0 - qa + lp; b1 = s.is_buy ? b0 - ba : b0 + ba;
+            }
+            publishPool({pool: s.pool, slot: s.slot, tx: txIndex, ts: s.ts, buy: s.is_buy ? 1 : 0, q1: Number(q1), b1: Number(b1), user: s.user, sig: s.signature});
+        } catch (e) { err('amm_pool', e); }
     }
 
     async function fetchTx(signature, why, txIndex = null) {
