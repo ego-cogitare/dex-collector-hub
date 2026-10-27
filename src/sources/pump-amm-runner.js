@@ -133,7 +133,11 @@ function hasAmmEvent(t) {
 /** Запуск на пуле MySQL db (таблицы уже созданы по sql/schema.sql — вручную); write = false — без записи в MySQL (база нужна для восстановления пулов);
  *  publish(channel, record) — раздача. Возвращает {stop()} — отписка и запись буферов */
 async function startPumpAmm({db, write = true, publish = () => {}}) {
-    const swapsW = new BulkWriter(db, 'lp_pump_amm_swaps', [...amm.SWAP_COLUMNS, 'src'], {size: 500, skipDuplicates: true});
+    const swapsW0 = new BulkWriter(db, 'lp_pump_amm_swaps', [...amm.SWAP_COLUMNS, 'src'], {size: 500, skipDuplicates: true});
+    /** AMM_DB_SIG_LEN (27.10, пользователь): в MySQL — первые N символов подписи (12 ≈ 70 бит, как у Bitquery и в parquet; колонка CHAR(12) latin1_bin),
+     *  ботам — полная. С укороченной подписью дотягивание после перезапуска не найдёт границу — держать AMM_BACKFILL_RESTORE=0 (с AMM_ALL дотягивания нет) */
+    const DB_SIG = Number(process.env.AMM_DB_SIG_LEN || 0);
+    const swapsW = DB_SIG > 0 ? {push: r => swapsW0.push({...r, signature: r.signature.slice(0, DB_SIG)}), close: () => swapsW0.close()} : swapsW0;
     const poolsW = new BulkWriter(db, 'lp_pump_amm_pools', amm.POOL_COLUMNS, {size: 20, ignore: true});
     if (!write) { swapsW.push = () => {}; poolsW.push = () => {}; logger.warn('pump_amm: запись в MySQL выключена'); }
     const swaps = {push: r => { swapsW.push(r); publish('pump_amm', r); }, close: () => swapsW.close()};

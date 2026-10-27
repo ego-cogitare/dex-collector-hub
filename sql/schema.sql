@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS lp_meteora_dbc_completes (
 -- pool_*_reserves — резервы пула до сделки (из события); coin_creator — в lp_pump_amm_pools (один на монету)
 CREATE TABLE IF NOT EXISTS lp_pump_amm_swaps (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  signature CHAR(88) NOT NULL, slot BIGINT NOT NULL, ts BIGINT NOT NULL, event_ts BIGINT NULL,
+  signature CHAR(12) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL, slot BIGINT NOT NULL, ts BIGINT NOT NULL,   -- 27.10: первые 12 символов (AMM_DB_SIG_LEN)
+  event_ts BIGINT NULL,
   pool CHAR(44) NOT NULL, mint CHAR(44) NULL, quote_mint CHAR(44) NULL, user CHAR(44) NULL,
   is_buy TINYINT NOT NULL, ix_name VARCHAR(32) NULL,
   base_amount DECIMAL(20,0) NOT NULL, quote_amount DECIMAL(20,0) NOT NULL, user_quote_amount DECIMAL(20,0) NULL, limit_quote_amount DECIMAL(20,0) NULL,
