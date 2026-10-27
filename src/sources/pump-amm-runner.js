@@ -455,6 +455,7 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
             filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size, grpcStreams: GRPC.open,
             backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors, virtualQuote: {...vqStats}}};
         for (const k in bfWhy) delete bfWhy[k];
+        if (!require('worker_threads').isMainThread && hidden.ON) line.hidden = hidden.stats();   // в потоке AMM — свой отправитель «скрытых» движений
         if (share > 10 && d.swaps > 50) logger.warn({amm: 'много дотянуто', ...line}); else logger.info({amm: line});
     }, 60000);
 

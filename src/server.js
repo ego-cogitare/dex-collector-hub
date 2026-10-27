@@ -47,10 +47,14 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
     const stats = {published: 0, bytes: 0, dropped: 0, clientsTotal: 0, ammPoolSent: 0};
     /** amm_pool: пул → сколько клиентов его ждут (быстрый отсев сделок, которые никому не нужны) */
     const poolWant = new Map();
+    let wantListener = null, wantTimer = null;
+    /** список ждущих пулов изменился — слушателю (поток AMM, AMM_WORKER=1) не чаще раза в 50 мс */
+    const wantChanged = () => { if (!wantListener || wantTimer) return; wantTimer = setTimeout(() => { wantTimer = null; wantListener([...poolWant.keys()]); }, 50); };
     const setPools = (c, list) => {
         for (const p of c.ammPools || []) { const n = (poolWant.get(p) || 1) - 1; if (n) poolWant.set(p, n); else poolWant.delete(p); }
         c.ammPools = new Set((Array.isArray(list) ? list : []).map(String).slice(0, 2000));
         for (const p of c.ammPools) poolWant.set(p, (poolWant.get(p) || 0) + 1);
+        wantChanged();
     };
 
     const server = net.createServer(sock => {
@@ -127,7 +131,7 @@ function createServer({port = +(process.env.HUB_PORT || 7710), host = process.en
     }
     /** размеры колец по каналам (записей и МБ буферов) — для метрики памяти */
     const ringStats = () => Object.fromEntries(CHANNELS.map((c, i) => [c, rings[i].length]).filter(([, n]) => n > 0));
-    return {publish, publishPool, stats, clients, seq, ringStats, close: () => new Promise(r => server.close(r))};
+    return {publish, publishPool, wantedPools: () => [...poolWant.keys()], onPoolsWanted: fn => { wantListener = fn; }, stats, clients, seq, ringStats, close: () => new Promise(r => server.close(r))};
 }
 
 module.exports = {createServer, CHANNELS, CH_ID, packr};

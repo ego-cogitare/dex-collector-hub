@@ -85,7 +85,10 @@ const LP = {launchlab: require('./sources/launchlab'), meteora_dbc: require('./s
         req.on('end', () => { try { const x = JSON.parse(b); if (!Array.isArray(x.prob) || !Array.isArray(x.ban)) throw new Error('нет prob / ban'); hub.publish('farm', {epoch: x.epoch, ver: x.ver, prob: x.prob, ban: x.ban, ts: Date.now()}); res.writeHead(200); res.end('{"ok":1}'); }
             catch (e) { res.writeHead(400); res.end(JSON.stringify({error: e.message})); } });
     }).listen(INGEST_PORT, process.env.HUB_INGEST_BIND || '127.0.0.1', () => logger.info(`приём: 127.0.0.1:${INGEST_PORT} (POST /farm)`));
-    const amm = SOURCES.includes('pump_amm') ? await require('./sources/pump-amm-runner').startPumpAmm({db, write: WRITE, publish, publishPool: hub.publishPool}) : null;
+    /** AMM_WORKER=1 — источник AMM в отдельном потоке выполнения (src/sources/pump-amm-worker.js; 27.10: поток всей программы AMM тормозил раздачу) */
+    const amm = !SOURCES.includes('pump_amm') ? null : process.env.AMM_WORKER === '1'
+        ? require('./sources/pump-amm-worker').startPumpAmmWorker({write: WRITE, publish, hub})
+        : await require('./sources/pump-amm-runner').startPumpAmm({db, write: WRITE, publish, publishPool: hub.publishPool});
     const bh = SOURCES.includes('blockhash') ? require('./sources/blockhash').startBlockhash({publish}) : null;
     /** BNB Chain: Four.meme и Flap.sh (websocket BSC_WS_URL, не Triton) */
     const bsc = SOURCES.includes('bsc') ? {four_meme: require('./sources/bsc/four-meme').startFourMeme({db, write: WRITE, publish}),
