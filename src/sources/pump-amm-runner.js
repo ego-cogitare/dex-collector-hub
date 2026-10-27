@@ -426,7 +426,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         if (share > 10 && d.swaps > 50) logger.warn({amm: 'много дотянуто', ...line}); else logger.info({amm: line});
     }, 60000);
 
-    logger.info(`коллектор pump.fun AMM запущен${ALL ? ' (AMM_ALL: все пулы программы, раздача и дотягивание — окно)' : ''}: окно ${WINDOW_MS / 60000} мин, поток — gRPC, дотягивание — RPC ${HTTP_URL === process.env.RPC ? '(Triton)' : HTTP_URL}`);
+    logger.info(`коллектор pump.fun AMM запущен${ALL ? ' (AMM_ALL: все пулы программы, раздача ботам — окно, без дотягивания)' : ''}: окно ${WINDOW_MS / 60000} мин, поток — gRPC, дотягивание — RPC ${HTTP_URL === process.env.RPC ? '(Triton)' : HTTP_URL}`);
     return {
         async stop() {
             stream.stop();
