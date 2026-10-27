@@ -133,7 +133,8 @@ function hasAmmEvent(t) {
 /** Запуск на пуле MySQL db (таблицы уже созданы по sql/schema.sql — вручную); write = false — без записи в MySQL (база нужна для восстановления пулов);
  *  publish(channel, record) — раздача. Возвращает {stop()} — отписка и запись буферов */
 async function startPumpAmm({db, write = true, publish = () => {}, publishPool = null}) {
-    const swapsW0 = new BulkWriter(db, 'lp_pump_amm_swaps', [...amm.SWAP_COLUMNS, 'src'], {size: 500, skipDuplicates: true});
+    /** AMM_ALL: INSERT IGNORE вместо ON DUPLICATE KEY UPDATE id = id — 27.10 повтор сделки в пачке давал «Auto-increment value in UPDATE conflicts…» и терял всю пачку (300–480 строк) */
+    const swapsW0 = new BulkWriter(db, 'lp_pump_amm_swaps', [...amm.SWAP_COLUMNS, 'src'], ALL ? {size: 500, ignore: true} : {size: 500, skipDuplicates: true});
     /** AMM_DB_SIG_LEN (27.10, пользователь): в MySQL — первые N символов подписи (12 ≈ 70 бит, как у Bitquery и в parquet; колонка CHAR(12) latin1_bin),
      *  ботам — полная. С укороченной подписью дотягивание после перезапуска не найдёт границу — держать AMM_BACKFILL_RESTORE=0 (с AMM_ALL дотягивания нет) */
     const DB_SIG = Number(process.env.AMM_DB_SIG_LEN || 0);
@@ -141,9 +142,16 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
     const poolsW = new BulkWriter(db, 'lp_pump_amm_pools', amm.POOL_COLUMNS, {size: 20, ignore: true});
     if (!write) { swapsW.push = () => {}; poolsW.push = () => {}; logger.warn('pump_amm: запись в MySQL выключена'); }
     const swaps = {push: r => { swapsW.push(r); publish('pump_amm', r); }, close: () => swapsW.close()};
-    const swapsAll = r => swapsW.push(r);   // AMM_ALL: сделка пула вне окна — только в MySQL
+    /** AMM_ALL: сделка пула вне окна — только в MySQL; повторы из потока (та же подпись и номер события) — отсекаются (два поколения по 200 тыс. ключей) */
+    let seenA = new Set(), seenB = new Set();
+    const swapsAll = r => {
+        const k = `${r.signature}:${r.ev_index}`;
+        if (seenA.has(k) || seenB.has(k)) { stats.dupSkipped++; return; }
+        seenA.add(k); if (seenA.size > 200000) { seenB = seenA; seenA = new Set(); }
+        swapsW.push(r);
+    };
     const pools = {push: r => { poolsW.push(r); publish('pump_amm_pool', r); }, close: () => poolsW.close()};
-    const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, swapsOther: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, staleRefreshes: 0, staleSubscribed: 0, errors: 0};
+    const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, swapsOther: 0, dupSkipped: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, staleRefreshes: 0, staleSubscribed: 0, errors: 0};
     const bfWhy = {};   // дотянутые сделки по причине: new — первые секунды пула, fallback — нет сделок из потока, reconnect, restore — после старта
     const err = (where, e) => { stats.errors++; if (stats.errors <= 20) logger.error(`${where}: ${e.message || e}`); };
     /** добавка пула → lp_pump_amm_pools.virtual_quote_reserves: аккаунт читаем после миграции (повторы — пока аккаунт не виден), строку обновляем, когда BulkWriter её записал */
@@ -443,7 +451,7 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
         const d = Object.fromEntries(Object.keys(stats).map(k => [k, stats[k] - prev[k]]));
         prev = {...stats};
         const share = d.swaps ? +(d.backfilled / d.swaps * 100).toFixed(1) : 0;
-        const line = {swapsMin: d.swaps, ...(ALL ? {swapsOtherMin: d.swapsOther} : {}), backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
+        const line = {swapsMin: d.swaps, ...(ALL ? {swapsOtherMin: d.swapsOther, dupSkippedMin: d.dupSkipped} : {}), backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
             filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size, grpcStreams: GRPC.open,
             backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors, virtualQuote: {...vqStats}}};
         for (const k in bfWhy) delete bfWhy[k];
