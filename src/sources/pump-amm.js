@@ -1,6 +1,6 @@
 /**
- * pump.fun AMM (PumpSwap, pAMMBay…): сделки в пулах монет, перешедших с бондинг-кривой pump.fun, — первые 60 минут после миграции
- * (окно — в collectors/amm-run.js). IDL — из блокчейна (версия 0.1.0, 08.10.2026), события — emit_cpi.
+ * pump.fun AMM (PumpSwap, pAMMBay…): сделки в пулах монет, перешедших с бондинг-кривой pump.fun, — первые AMM_WINDOW_MIN после миграции
+ * (окно — в pump-amm-runner.js); AMM_ALL=1 — сделки всех пулов программы. IDL — из блокчейна (версия 0.1.0, 08.10.2026), события — emit_cpi.
  *
  * Пул миграции: CreatePoolEvent в транзакции, где участвует программа кривой pump.fun (6EF8…, инструкция migrate);
  * пулы, созданные вручную (create_pool без кривой), не пишем.
@@ -76,11 +76,23 @@ function parseCreatePool(body) {
     return p;
 }
 
+/** Монета пула из самой транзакции: инструкция AMM с этим пулом (accounts[0]) и пользователем события (accounts[1]); раскладка buy / sell:
+ *  pool, user, global_config, base_mint, quote_mint, … (без совпадения пользователя — любая инструкция AMM с этим пулом первым счётом). */
+function mintFromIxs(ixs, pool, user) {
+    let any = null;
+    for (const x of ixs) {
+        if (x.program !== PROGRAM || x.accounts.length < 9 || x.accounts[0] !== pool) continue;
+        if (x.accounts[1] === user) return {mint: x.accounts[3], quote_mint: x.accounts[4]};
+        any = any || {mint: x.accounts[3], quote_mint: x.accounts[4]};
+    }
+    return any;
+}
+
 /**
  * Транзакция → {swaps, pools}. pools — только пулы миграции с кривой pump.fun; swaps — сделки в пулах, для которых poolInfo(pool)
- * возвращает {mint, quote_mint} (активное окно), остальные пропускаются.
+ * возвращает {mint, quote_mint} (активное окно); all = true — и в остальных пулах (монета — из инструкции свопа, у сделки active = false).
  */
-function decode(tx, meta, poolInfo) {
+function decode(tx, meta, poolInfo, {all = false} = {}) {
     const ixs = allInstructions(tx, meta.keys);
     const swaps = [], pools = [];
     const migration = meta.keys.includes(BONDING_CURVE);
@@ -91,10 +103,10 @@ function decode(tx, meta, poolInfo) {
             pools.push({...parseCreatePool(ev.body), created_at_ms: meta.ts, slot: meta.slot, signature: meta.signature});
         } else if (ev.disc === EV_BUY || ev.disc === EV_SELL) {
             const s = ev.disc === EV_BUY ? parseBuy(ev.body) : parseSell(ev.body);
-            const info = poolInfo(s.pool);
+            const act = poolInfo(s.pool), info = act || (all ? mintFromIxs(ixs, s.pool, s.user) : null);
             if (!info) continue;
             swaps.push({...s, mint: info.mint, quote_mint: info.quote_mint, signature: meta.signature, ev_index: evIndex, slot: meta.slot, ts: meta.ts,
-                cu_price: meta.cuPrice, cu_limit: meta.cuLimit, signers_count: meta.signers, tips: meta.tips});
+                cu_price: meta.cuPrice, cu_limit: meta.cuLimit, signers_count: meta.signers, tips: meta.tips, active: !!act});
         }
     }
     return {swaps, pools};

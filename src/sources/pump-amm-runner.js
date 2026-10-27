@@ -25,6 +25,11 @@
  *   слот без известных номеров — место в слоте (0, 1, …), а если это самый свежий слот дотягивания без границы before — точные номера из getBlock (подписи).
  *   Сортировка сделок пула — (slot, tx_index, ev_index).
  * Окно — от миграции; после него пул пишется до ближайшей смены потока. Раз в минуту — {amm: …}: сделок за минуту, из них дотянуто (и доля), вызовов RPC; доля > 10% — предупреждение.
+ *
+ * AMM_ALL=1 (27.10, пользователь: «все свопы за всё время»): поток — один фильтр на всю программу AMM (смены потока нет), в MySQL — сделки всех пулов
+ *   (монета пула вне окна — из инструкции свопа в той же транзакции, src 0). Окно AMM_WINDOW_MIN остаётся для пулов миграций: только они раздаются ботам
+ *   (pump_amm / pump_amm_pool) и отдают транзакции сборщику «скрытых» движений. Дотягивания через RPC нет: пул в потоке с самой миграции,
+ *   смены потока нет; на обрыве и перезапуске — потеря секунд (повтор сделки отсекает уникальный ключ MySQL). RPC — только добавка пула (getAccountInfo).
  */
 const bs58 = require('bs58').default;
 const {txMeta, BulkWriter, streamPrograms, grpcPool, logger} = require('../common');
@@ -41,6 +46,7 @@ const FALLBACK_MS = Number(process.env.AMM_FALLBACK_MS || 30000);  // сдело
 const MAX_PAGES = 50;
 const STALE_MAX = Number(process.env.AMM_STALE_MAX || 50);              // истёкших пулов в фильтре потока — сменить поток без новой миграции
 const STALE_MS = Number(process.env.AMM_STALE_MIN || 15) * 60000;       // … или старейший истёкший висит в фильтре дольше
+const ALL = process.env.AMM_ALL === '1';   // все пулы программы (см. шапку)
 
 /** HTTP JSON-RPC: не больше RPC_MAX запросов одновременно (AMM_RPC_MAX, 10); повтор с растущей паузой при 429, сетевой ошибке и превышении лимита
  *  в теле ответа (Chainstack: -32005 «exceeded the RPS limit», 18.10 — на рестарте хаб дотягивал сотню пулов разом и терял сделки) */
@@ -131,8 +137,9 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     const poolsW = new BulkWriter(db, 'lp_pump_amm_pools', amm.POOL_COLUMNS, {size: 20, ignore: true});
     if (!write) { swapsW.push = () => {}; poolsW.push = () => {}; logger.warn('pump_amm: запись в MySQL выключена'); }
     const swaps = {push: r => { swapsW.push(r); publish('pump_amm', r); }, close: () => swapsW.close()};
+    const swapsAll = r => swapsW.push(r);   // AMM_ALL: сделка пула вне окна — только в MySQL
     const pools = {push: r => { poolsW.push(r); publish('pump_amm_pool', r); }, close: () => poolsW.close()};
-    const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, staleRefreshes: 0, staleSubscribed: 0, errors: 0};
+    const stats = {migrations: 0, grpcTx: 0, skipped: 0, swaps: 0, swapsOther: 0, backfilled: 0, rpcCalls: 0, reconnects: 0, filterUpdates: 0, staleRefreshes: 0, staleSubscribed: 0, errors: 0};
     const bfWhy = {};   // дотянутые сделки по причине: new — первые секунды пула, fallback — нет сделок из потока, reconnect, restore — после старта
     const err = (where, e) => { stats.errors++; if (stats.errors <= 20) logger.error(`${where}: ${e.message || e}`); };
     /** добавка пула → lp_pump_amm_pools.virtual_quote_reserves: аккаунт читаем после миграции (повторы — пока аккаунт не виден), строку обновляем, когда BulkWriter её записал */
@@ -173,7 +180,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             const ti = d.transaction.transaction.index;
             if (ti !== undefined && ti !== null) {
                 txIndex = Number(ti);
-                rememberIdx(bs58.encode(d.transaction.transaction.signature), Number(d.transaction.slot), txIndex);   // и транзакции без событий AMM — опоры для дотянутых
+                if (!ALL) rememberIdx(bs58.encode(d.transaction.transaction.signature), Number(d.transaction.slot), txIndex);   // и транзакции без событий AMM — опоры для дотянутых
             }
         }
         if (src === 0 && !hasAmmEvent(d.transaction.transaction)) { stats.skipped++; return; }
@@ -186,17 +193,17 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
             a.sigs.add(meta.signature);
             if (src === 0) a.lastSig = meta.signature;
         }
-        const r = amm.decode(d.transaction.transaction, meta, poolInfo);
+        const r = amm.decode(d.transaction.transaction, meta, poolInfo, {all: ALL});
         for (const p of r.pools) {
             const a = activate(p.pool, {mint: p.mint, quote_mint: p.quote_mint, is_mayhem: p.is_mayhem, createdAt: meta.ts, migrationSig: p.signature});
             if (!a) continue;
             pools.push(p); stats.migrations++;
             if (write) saveVirtualQuote(p.pool);
-            a.fallbackTimer = setTimeout(() => startBackfill(p.pool, {until: p.signature, delay: 0, why: 'fallback'}), FALLBACK_MS);
+            if (!ALL) a.fallbackTimer = setTimeout(() => startBackfill(p.pool, {until: p.signature, delay: 0, why: 'fallback'}), FALLBACK_MS);
         }
         for (const s of r.swaps) {
             const a = active.get(s.pool);
-            if (!a) continue;   // пул в подписке — пишем, в т.ч. после окна (до ближайшей смены потока)
+            if (!a) { if (ALL && src === 0) { swapsAll({...s, src, tx_index: txIndex}); stats.swapsOther++; } continue; }   // пул в подписке — пишем, в т.ч. после окна (до ближайшей смены потока)
             const key = `${s.signature}:${s.ev_index}`;   // как уникальный ключ в MySQL
             if (a.seen.has(key)) continue;
             a.seen.add(key);
@@ -290,6 +297,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     }
 
     function startBackfill(pool, {until, before, delay, why}) {
+        if (ALL) return;   // AMM_ALL: дотягивания нет (см. шапку)
         const a = active.get(pool);
         if (!a || a.backfill) return;
         clearTimeout(a.fallbackTimer);
@@ -299,6 +307,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     /** после обрыва потока: пропуск по всем пулам, у которых уже есть граница (новые пулы закроет их первое дотягивание) */
     let catchUp = null, catchUpAgain = false;
     function scheduleCatchUp() {
+        if (ALL) return;
         if (catchUp) { catchUpAgain = true; return; }
         catchUp = new Promise(r => setTimeout(r, CONFIRM_MS)).then(async () => {
             for (const [p, a] of active) if (a.lastSig && a.backfill) await gapFill(p, {until: a.lastSig, why: 'reconnect'}).catch(e => err(`дотягивание после смены подписки ${p}`, e));
@@ -308,8 +317,9 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     /** истёкшие пулы (окно + 30 с прошло) ещё в подписке: пул → когда истёк; убираются из active при открытии следующего потока */
     const stale = new Map();
     const filters = () => {
-        for (const p of stale.keys()) { const a = active.get(p); if (a) clearTimeout(a.fallbackTimer); active.delete(p); }
+        for (const p of stale.keys()) { const a = active.get(p); if (a) clearTimeout(a.fallbackTimer); active.delete(p); activeB64.delete(Buffer.from(bs58.decode(p)).toString('base64')); }
         stale.clear();
+        if (ALL) return {all: {accountInclude: [amm.PROGRAM]}};   // все транзакции программы: и миграции, и сделки любых пулов
         const f = {migrate: {accountRequired: [amm.BONDING_CURVE, amm.PROGRAM]}};
         /** 24.10: Chainstack не принимает > 200 аккаунтов в одном фильтре (с 16:24 UTC, когда пулов в окне 300 мин стало 201, каждая смена подписки падала
          *  «stream receive failed», новые пулы не подписывались) — пулы делим на фильтры по AMM_POOLS_CHUNK (150) */
@@ -324,7 +334,14 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     const SWITCH_OVERLAP_MS = Number(process.env.AMM_SWITCH_OVERLAP_MS || 10000);
     let stream = null, refreshTimer = null, switching = false, refreshAgain = false;
     const hidden = require('../hidden-sink');   // «скрытые» движения SOL — общий отправитель с основным потоком (повторы по подписи отсекаются)
-    const onTx = d => { stats.grpcTx++; try { handleTx(d, 0); } catch (e) { err('транзакция', e); } if (hidden.ON) setImmediate(() => hidden.push(d)); };
+    /** AMM_ALL: сборщику «скрытых» движений — как раньше, только транзакции пулов окна (иначе поток всей программы); ключи сверяются в base64 — дешевле bs58 */
+    const activeB64 = new Set();
+    const touchesActive = d => {
+        const t = d.transaction.transaction, m = t.transaction?.message, meta = t.meta;
+        for (const L of [m?.accountKeys, meta?.loadedWritableAddresses, meta?.loadedReadonlyAddresses]) for (const k of L || []) if (activeB64.has(Buffer.from(k).toString('base64'))) return true;
+        return false;
+    };
+    const onTx = d => { stats.grpcTx++; try { handleTx(d, 0); } catch (e) { err('транзакция', e); } if (hidden.ON && (!ALL || touchesActive(d))) setImmediate(() => hidden.push(d)); };
     const openStream = async () => {
         let firstData = null;
         const got = new Promise(r => { firstData = r; });
@@ -333,7 +350,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         return {st, got};
     };
     const refresh = () => {
-        if (!stream) return;
+        if (!stream || ALL) return;   // AMM_ALL: фильтр на всю программу — смена потока не нужна
         if (switching) { refreshAgain = true; return; }
         if (refreshTimer) return;
         refreshTimer = setTimeout(async () => {
@@ -354,7 +371,7 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
     function activate(pool, {mint, quote_mint, is_mayhem = null, createdAt, migrationSig, lastSig}) {
         if (active.has(pool) || createdAt + WINDOW_MS <= Date.now()) return null;
         const a = {mint, quote_mint, is_mayhem, until: createdAt + WINDOW_MS, seen: new Set(), sigs: new Set(), migrationSig, lastSig, backfill: null};
-        active.set(pool, a);
+        active.set(pool, a); activeB64.add(Buffer.from(bs58.decode(pool)).toString('base64'));
         refresh();
         return a;
     }
@@ -381,12 +398,16 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
 
     stream = (await openStream()).st;
     /** AMM_BACKFILL_RESTORE=0 — не дотягивать историю пулов после старта процесса (18.10: после ночи без записи в MySQL — часы истории, ~5 900 запросов/мин подряд) */
-    if (process.env.AMM_BACKFILL_RESTORE !== '0') for (const [p, until] of restored) gapFill(p, {until, why: 'restore'}).catch(e => err(`дотягивание после старта ${p}`, e));
+    if (!ALL && process.env.AMM_BACKFILL_RESTORE !== '0') for (const [p, until] of restored) gapFill(p, {until, why: 'restore'}).catch(e => err(`дотягивание после старта ${p}`, e));
 
     /** просроченные пулы (окно + 30 с) — пишутся дальше и уходят при следующей смене потока (новая миграция);
      *  свою смену потока — только если истёкших много или старейший истёк давно */
     setInterval(() => {
         const now = Date.now();
+        if (ALL) {   // поток не меняется: пул с истёкшим окном (+30 с) сразу выходит из окна — дальше пишется как прочие
+            for (const [p, a] of active) if (a.until + 30000 <= now) { clearTimeout(a.fallbackTimer); active.delete(p); activeB64.delete(Buffer.from(bs58.decode(p)).toString('base64')); }
+            return;
+        }
         for (const [p, a] of active) if (a.until + 30000 <= now && !stale.has(p)) stale.set(p, now);
         stats.staleSubscribed = stale.size;
         if (stale.size && (stale.size >= STALE_MAX || now - Math.min(...stale.values()) >= STALE_MS)) { stats.staleRefreshes++; refresh(); }
@@ -398,14 +419,14 @@ async function startPumpAmm({db, write = true, publish = () => {}}) {
         const d = Object.fromEntries(Object.keys(stats).map(k => [k, stats[k] - prev[k]]));
         prev = {...stats};
         const share = d.swaps ? +(d.backfilled / d.swaps * 100).toFixed(1) : 0;
-        const line = {swapsMin: d.swaps, backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
+        const line = {swapsMin: d.swaps, ...(ALL ? {swapsOtherMin: d.swapsOther} : {}), backfilledMin: d.backfilled, backfillPct: share, rpcMin: d.rpcCalls, grpcTxMin: d.grpcTx, skippedMin: d.skipped, migrationsMin: d.migrations,
             filterUpdatesMin: d.filterUpdates, staleRefreshesMin: d.staleRefreshes, staleSubscribed: stats.staleSubscribed, active: active.size, grpcStreams: GRPC.open,
             backfilledBy: {...bfWhy}, total: {swaps: stats.swaps, backfilled: stats.backfilled, reconnects: stats.reconnects, errors: stats.errors, virtualQuote: {...vqStats}}};
         for (const k in bfWhy) delete bfWhy[k];
         if (share > 10 && d.swaps > 50) logger.warn({amm: 'много дотянуто', ...line}); else logger.info({amm: line});
     }, 60000);
 
-    logger.info(`коллектор pump.fun AMM запущен: окно ${WINDOW_MS / 60000} мин, поток — gRPC, дотягивание — RPC ${HTTP_URL === process.env.RPC ? '(Triton)' : HTTP_URL}`);
+    logger.info(`коллектор pump.fun AMM запущен${ALL ? ' (AMM_ALL: все пулы программы, раздача и дотягивание — окно)' : ''}: окно ${WINDOW_MS / 60000} мин, поток — gRPC, дотягивание — RPC ${HTTP_URL === process.env.RPC ? '(Triton)' : HTTP_URL}`);
     return {
         async stop() {
             stream.stop();
