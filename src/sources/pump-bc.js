@@ -184,34 +184,37 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         if (!swaps) {
             if (logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2')) {
                 const cl = logs.find(l => l.startsWith('Program data: G3KpTd7r')), ce = cl && parseCreateEvent(cl.slice(14));
-                if (ce) { pendingCreate.set(ce.mint, {creator: ce.creator, createdAt, at: Date.now()}); stats.createsNoTrade++; }
+                if (ce) { pendingCreate.set(ce.mint, {creator: ce.creator, createdAt, at: Date.now(), tokenProgram: detectTokenProgram(logs), createData: cl.slice(14)}); stats.createsNoTrade++; }
             }
             stats.skipped++; return;
         }
         stats.swaps += swaps.length;
         const info = txInfo(t);
-        const create = logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2');
-        const tokenProgram = create ? detectTokenProgram(logs) : null;
+        let create = logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2');
+        let tokenProgram = create ? detectTokenProgram(logs) : null;
+        /** первая сделка монеты, созданной без сделки: запись для ботов — как создание (create, программа токена и событие создания — из транзакции создания) */
+        let lateCreate = null;
+        if (!create && pendingCreate.size) { const lm = swaps[swaps.length - 1].mint, pc = lm && pendingCreate.get(lm); if (pc && pc.tokenProgram) { lateCreate = pc; create = true; tokenProgram = pc.tokenProgram; } }
         /** для ботов: событие создания с именем/символом/uri (base64 «Program data: G3KpTd7r…», разбор — parseMetadata бота) и токены транзакции
          *  (программа и разрядность по балансам — нужны сделкам кривых не в SOL) */
-        const createLine = create ? logs.find(l => l.startsWith('Program data: G3KpTd7r')) : null;
+        const createLine = lateCreate ? 'Program data: ' + lateCreate.createData : create ? logs.find(l => l.startsWith('Program data: G3KpTd7r')) : null;
         const tokens = {};
         for (const b of [...(meta.postTokenBalances || []), ...(meta.preTokenBalances || [])]) if (b.mint && !tokens[b.mint]) tokens[b.mint] = {programId: b.programId || null, decimals: b.uiTokenAmount ? Number(b.uiTokenAmount.decimals) : null};
         publish('pump_bc', {sig: txSig, slot, ts: createdAt, recvTs, cuPrice: info.cuPrice, cuLimit: info.cuLimit, signers: signatures.length, tips: info.tips,
-            create, tokenProgram, createData: createLine ? createLine.slice(14) : null, tokens, swaps});
+            create, tokenProgram, createData: createLine ? createLine.slice(14) : null, tokens, swaps, ...(lateCreate ? {lateCreate: true} : {})});
         if (!db || !write) return;
         if (txSeen.has(txSig)) return; txSeen.set(txSig, recvTs);
         const last = swaps[swaps.length - 1];
 
         /** mayhem: строка монеты при создании, сделки — все */
         if (last.mayhem_mode) {
-            const pm = !create && pendingCreate.has(last.mint) ? takePending(last.mint) : null;
+            const pm = (lateCreate || !create) && pendingCreate.has(last.mint) ? takePending(last.mint) : null;
             if (pm && !mayhemRows.has(last.mint)) {
                 mayhemRows.add(last.mint); setTimeout(() => mayhemRows.delete(last.mint), 600000); stats.createsLate++;
                 mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, 1, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)',
                     [last.mint, pm.creator, pm.createdAt, last.quote_mint || WSOL, last.mint]]);
             }
-            if (create && !mayhemRows.has(last.mint)) {
+            if (create && !lateCreate && !mayhemRows.has(last.mint)) {
                 mayhemRows.add(last.mint); setTimeout(() => mayhemRows.delete(last.mint), 600000);
                 mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, 1, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)',
                     [last.mint, last.creator, createdAt, last.quote_mint || WSOL, last.mint]]);
@@ -246,7 +249,7 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         }
         /** SOL-кривые: строка монеты при создании, сделки — все (монеты без увиденного создания и с «битым стартом» отсеивает выгрузка) */
         const mint = last.mint;
-        if (create && tokenProgram) {
+        if (create && tokenProgram && !lateCreate) {
             stats.creates++;
             mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) VALUES (?, ?, ?, ?, ?)', [last.mint, last.creator, last.mayhem_mode, createdAt, WSOL]]);
         } else if (pendingCreate.size) {
