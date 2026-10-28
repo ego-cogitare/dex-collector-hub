@@ -134,7 +134,20 @@ function createPumpBc({db, write = true, publish = () => {}}) {
     const swapsW = new BulkWriter(db, 'pump_fun_bc_swaps', SWAP_COLUMNS, {size: 100, everyMs: 2000});
     if (!write) swapsW.push = () => {};
     const mintSql = (where) => db && write ? db.query(...where).catch(e => logger.error('pump_fun_bc_mints', e.message)) : null;
-    const stats = {tx: 0, swaps: 0, creates: 0, written: 0, mayhem: 0, nonSol: 0, creatorChanges: 0, skipped: 0};
+    const stats = {tx: 0, swaps: 0, creates: 0, createsNoTrade: 0, createsLate: 0, written: 0, mayhem: 0, nonSol: 0, creatorChanges: 0, skipped: 0};
+    /** 28.10: создание без сделки в той же транзакции (покупка — следующей) — раньше транзакция отбрасывалась целиком и строки монеты не было.
+     *  Монета ждёт первую сделку (до 10 мин): строка в pump_fun_bc_mints — с создателем и временем создания из события, mayhem и котировка — из сделки */
+    const pendingCreate = new Map();
+    const takePending = (m) => { const p = pendingCreate.get(m); if (p) pendingCreate.delete(m); return p; };
+    setInterval(() => { const t = Date.now() - 600000; for (const [k, v] of pendingCreate) if (v.at < t) pendingCreate.delete(k); }, 60000);
+    /** событие создания (Program data: G3KpTd7r…): name, symbol, uri (строки borsh), mint, bonding_curve, user, creator — сверено 28.10 */
+    const parseCreateEvent = line => {
+        try {
+            const b = Buffer.from(line, 'base64'); let o = 8;
+            for (let i = 0; i < 3; i++) o += 4 + b.readUInt32LE(o);
+            return {mint: bs58.encode(b.subarray(o, o + 32)), creator: bs58.encode(b.subarray(o + 96, o + 128))};
+        } catch (e) { return null; }
+    };
     /** дубли: та же транзакция повторно (переподключение потока) — подписи за последние 10 мин */
     const txSeen = new Map(); setInterval(() => { const t = Date.now() - 600000; for (const [k, v] of txSeen) if (v < t) txSeen.delete(k); }, 60000);
     const mayhemRows = new Set();
@@ -168,7 +181,13 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         let swaps;
         const txSig = bs58.encode(t.signature);
         try { swaps = parseLogs(logs, txSig); } catch (e) { stats.skipped++; return; }
-        if (!swaps) { stats.skipped++; return; }
+        if (!swaps) {
+            if (logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2')) {
+                const cl = logs.find(l => l.startsWith('Program data: G3KpTd7r')), ce = cl && parseCreateEvent(cl.slice(14));
+                if (ce) { pendingCreate.set(ce.mint, {creator: ce.creator, createdAt, at: Date.now()}); stats.createsNoTrade++; }
+            }
+            stats.skipped++; return;
+        }
         stats.swaps += swaps.length;
         const info = txInfo(t);
         const create = logs.includes('Program log: Instruction: CreateV2') && logs.includes('Program log: Instruction: InitializeMint2');
@@ -186,6 +205,12 @@ function createPumpBc({db, write = true, publish = () => {}}) {
 
         /** mayhem: строка монеты при создании, сделки — все */
         if (last.mayhem_mode) {
+            const pm = !create && pendingCreate.has(last.mint) ? takePending(last.mint) : null;
+            if (pm && !mayhemRows.has(last.mint)) {
+                mayhemRows.add(last.mint); setTimeout(() => mayhemRows.delete(last.mint), 600000); stats.createsLate++;
+                mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, 1, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)',
+                    [last.mint, pm.creator, pm.createdAt, last.quote_mint || WSOL, last.mint]]);
+            }
             if (create && !mayhemRows.has(last.mint)) {
                 mayhemRows.add(last.mint); setTimeout(() => mayhemRows.delete(last.mint), 600000);
                 mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, 1, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)',
@@ -213,8 +238,9 @@ function createPumpBc({db, write = true, publish = () => {}}) {
             const first = swaps.find(x => x.quote_mint);
             if (first && !nonSolMintRows.has(first.mint)) {
                 nonSolMintRows.add(first.mint); setTimeout(() => nonSolMintRows.delete(first.mint), 30 * 60000);
+                const pq = takePending(first.mint); if (pq) stats.createsLate++;
                 mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, ?, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)',
-                    [first.mint, first.creator, first.mayhem_mode, createdAt, first.quote_mint, first.mint]]);
+                    [first.mint, pq ? pq.creator : first.creator, first.mayhem_mode, pq ? pq.createdAt : createdAt, first.quote_mint, first.mint]]);
             }
             return;
         }
@@ -223,6 +249,12 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         if (create && tokenProgram) {
             stats.creates++;
             mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) VALUES (?, ?, ?, ?, ?)', [last.mint, last.creator, last.mayhem_mode, createdAt, WSOL]]);
+        } else if (pendingCreate.size) {
+            for (const m of new Set(swaps.filter(x => x.mint && !x.quote_mint && !x.mayhem_mode).map(x => x.mint))) {
+                const pc = takePending(m); if (!pc) continue;
+                stats.createsLate++;
+                mintSql(['INSERT INTO pump_fun_bc_mints(mint, creator, mayhem_mode, created_at_ms, quote_mint) SELECT ?, ?, 0, ?, ? FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM pump_fun_bc_mints WHERE mint = ?)', [m, pc.creator, pc.createdAt, WSOL, m]]);
+            }
         }
         /** у каждой сделки — своя монета (в транзакции бывают сделки по нескольким кривым); price_sol — по последней сделке этой монеты в транзакции, как раньше */
         const lastOf = new Map(); for (const sw of swaps) if (sw.mint && !sw.quote_mint && !sw.mayhem_mode) lastOf.set(sw.mint, sw);
