@@ -242,7 +242,9 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
                 const kept = /_v2$/.test(s.ix_name || '') ? BigInt(s.coin_creator_fee || 0) + BigInt(s.buyback_fee || 0) : 0n;
                 q1 = s.is_buy ? q0 + qa + lp + kept : q0 - qa + lp; b1 = s.is_buy ? b0 - ba : b0 + ba;
             }
-            publishPool({pool: s.pool, slot: s.slot, tx: txIndex, ts: s.ts, buy: s.is_buy ? 1 : 0, q1: Number(q1), b1: Number(b1), user: s.user, sig: s.signature});
+            /** qm / mint / qa / fe (29.10) — для подписки по котировке: котировка и база пула, quote_amount и комиссии сделки (lp + protocol + coin_creator) */
+            publishPool({pool: s.pool, slot: s.slot, tx: txIndex, ts: s.ts, buy: s.is_buy ? 1 : 0, q1: Number(q1), b1: Number(b1), user: s.user, sig: s.signature,
+                qm: s.quote_mint, mint: s.mint, qa: Number(s.quote_amount), fe: Number(s.lp_fee || 0) + Number(s.protocol_fee || 0) + Number(s.coin_creator_fee || 0)});
         } catch (e) { err('amm_pool', e); }
     }
 

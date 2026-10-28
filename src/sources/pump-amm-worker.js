@@ -4,7 +4,7 @@
  * основного потока (createdAt → приход) вырос с p99 ~30–70 мс до 450–820 мс вечером. Теперь в потоке AMM — gRPC Chainstack, разбор, запись в MySQL
  * (своё соединение), «скрытые» движения; в основной поток уходят только записи для раздачи:
  *   {t: 'pub', ch, r}  — каналы pump_amm / pump_amm_pool (пулы окна AMM_WINDOW_MIN)
- *   {t: 'pool', r}     — amm_pool: сделки пулов, которые ждут клиенты (список — из основного потока: {t: 'want', pools})
+ *   {t: 'pool', r}     — amm_pool: сделки пулов, которые ждут клиенты (список — из основного потока: {t: 'want', pools, quotes}; quotes — котировки, все пулы которых ждут, 29.10)
  * Остановка: {t: 'stop'} → поток дописывает буферы и отвечает {t: 'stopped'}. Поток упал — основной поток запускает его заново через 5 с.
  */
 'use strict';
@@ -28,10 +28,10 @@ if (isMainThread) {
                 logger.error(`поток AMM завершился (код ${code}) — перезапуск через 5 с`);
                 setTimeout(spawn, 5000);
             });
-            worker.postMessage({t: 'want', pools: hub.wantedPools()});
+            worker.postMessage({t: 'want', pools: hub.wantedPools(), quotes: hub.wantedQuotes()});
             logger.info('поток AMM запущен (worker_threads)');
         };
-        hub.onPoolsWanted(pools => { if (worker) worker.postMessage({t: 'want', pools}); });
+        hub.onPoolsWanted(w => { if (worker) worker.postMessage({t: 'want', pools: w.pools, quotes: w.quotes}); });
         spawn();
         return {
             stop: () => new Promise(resolve => {
@@ -50,12 +50,12 @@ if (isMainThread) {
     (async () => {
         const db = mysql.createPool({host: process.env.MYSQL_HOST, user: process.env.MYSQL_USERNAME, password: process.env.MYSQL_PASSWORD,
             database: process.env.MYSQL_DATABASE, connectionLimit: 3, charset: 'utf8mb4'});
-        let want = new Set();
+        let want = new Set(), wantQ = new Set();
         const amm = await require('./pump-amm-runner').startPumpAmm({db, write: workerData.write,
             publish: (ch, r) => parentPort.postMessage({t: 'pub', ch, r}),
-            publishPool: r => { if (want.has(r.pool)) parentPort.postMessage({t: 'pool', r}); }});
+            publishPool: r => { if (want.has(r.pool) || wantQ.has(r.qm)) parentPort.postMessage({t: 'pool', r}); }});
         parentPort.on('message', async m => {
-            if (m.t === 'want') want = new Set(m.pools);
+            if (m.t === 'want') { want = new Set(m.pools); wantQ = new Set(m.quotes || []); }
             else if (m.t === 'stop') {
                 await Promise.race([amm.stop(), new Promise(r => setTimeout(r, 4000))]);
                 await db.end().catch(() => {});

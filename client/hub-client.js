@@ -10,7 +10,8 @@
  *   hub.on('up', () => ...);
  *   hub.connect();
  *   hub.setAmmPools(['pool…', …]);   // amm_pool: сделки PumpSwap этих пулов (резервы после сделки), список меняется без переподключения
- *   hub.on('amm_pool', rec => ...);    // {pool, slot, tx, ts, buy, q1, b1, user, sig}
+ *   hub.setAmmQuotes(['quote_mint…']); // amm_pool: все сделки пулов с этими котировками (29.10), вместе со списком пулов или вместо него
+ *   hub.on('amm_pool', rec => ...);    // {pool, slot, tx, ts, buy, q1, b1, user, sig, qm, mint, qa, fe}
  */
 const net = require('net');
 const {EventEmitter} = require('events');
@@ -24,7 +25,7 @@ class HubClient extends EventEmitter {
         Object.assign(this, {host, port, name, subscribe, channels, silenceMs, retryMs});
         this.last = {};            // канал → последний номер
         this.names = null;         // номер канала → имя (из welcome)
-        this.lastData = Date.now(); this.down = false; this.stopped = false; this.ammPools = [];
+        this.lastData = Date.now(); this.down = false; this.stopped = false; this.ammPools = []; this.ammQuotes = [];
         this.watch = setInterval(() => {
             const ms = Date.now() - this.lastData;
             if (ms > this.silenceMs && !this.down) { this.down = true; this.emit('down', ms); if (this.sock) this.sock.destroy(); }
@@ -35,7 +36,7 @@ class HubClient extends EventEmitter {
         const sock = this.sock = net.connect({host: this.host, port: this.port});
         sock.setNoDelay(true);
         let buf = Buffer.alloc(0);
-        sock.on('connect', () => sock.write(JSON.stringify({hello: 1, name: this.name, subscribe: this.subscribe, channels: this.channels, resume: this.last, amm_pools: this.ammPools}) + '\n'));
+        sock.on('connect', () => sock.write(JSON.stringify({hello: 1, name: this.name, subscribe: this.subscribe, channels: this.channels, resume: this.last, amm_pools: this.ammPools, amm_quotes: this.ammQuotes}) + '\n'));
         sock.on('data', d => {
             this.lastData = Date.now();
             if (this.down) { this.down = false; this.emit('up'); }
@@ -68,6 +69,11 @@ class HubClient extends EventEmitter {
     setAmmPools(list) {
         this.ammPools = [...list];
         if (this.sock && !this.sock.destroyed && this.sock.writable && !this.sock.connecting) this.sock.write(JSON.stringify({amm_pools: this.ammPools}) + '\n');
+    }
+    /** котировки канала amm_pool (29.10): все пулы с этими котировками — так же, как setAmmPools */
+    setAmmQuotes(list) {
+        this.ammQuotes = [...list];
+        if (this.sock && !this.sock.destroyed && this.sock.writable && !this.sock.connecting) this.sock.write(JSON.stringify({amm_quotes: this.ammQuotes}) + '\n');
     }
     stop() { this.stopped = true; clearInterval(this.watch); if (this.sock) this.sock.destroy(); }
 }
