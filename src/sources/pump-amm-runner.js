@@ -411,7 +411,9 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
     /** после перезапуска: пулы моложе окна из базы, дотягивание после самой свежей (по слоту) записанной сделки или с миграции.
      *  Последняя по id строка не годится: это может быть дотянутая старая сделка — граница ушла бы в прошлое и всё после неё
      *  скачалось бы повторно (так появлялись дубли). Подписи записанных сделок последних ~150 слотов — в sigs: повторно не запрашиваются. */
-    const [rows] = await db.query(`SELECT p.pool, p.mint, p.quote_mint, p.is_mayhem, p.created_at_ms, p.signature,
+    /** AMM_ALL: дотягивания нет — сделки пулов при старте не нужны, только список пулов окна (28.10: ~500 запросов к таблице всех сделок AMM, ~3 мин без потока) */
+    const [rows] = ALL ? await db.query('SELECT pool, mint, quote_mint, is_mayhem, created_at_ms, signature, NULL last_sig, NULL last_slot FROM lp_pump_amm_pools WHERE created_at_ms > ?', [Date.now() - WINDOW_MS])
+        : await db.query(`SELECT p.pool, p.mint, p.quote_mint, p.is_mayhem, p.created_at_ms, p.signature,
             (SELECT s.signature FROM lp_pump_amm_swaps s WHERE s.pool = p.pool ORDER BY s.slot DESC, s.id DESC LIMIT 1) last_sig,
             (SELECT MAX(s.slot) FROM lp_pump_amm_swaps s WHERE s.pool = p.pool) last_slot
         FROM lp_pump_amm_pools p WHERE p.created_at_ms > ?`, [Date.now() - WINDOW_MS]);
