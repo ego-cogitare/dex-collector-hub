@@ -11,7 +11,7 @@
  *   hub.connect();
  *   hub.setAmmPools(['pool…', …]);   // amm_pool: сделки PumpSwap этих пулов (резервы после сделки), список меняется без переподключения
  *   hub.setAmmQuotes(['quote_mint…']); // amm_pool: все сделки пулов с этими котировками (29.10), вместе со списком пулов или вместо него
- *   hub.on('amm_pool', rec => ...);    // {pool, slot, tx, ts, buy, q1, b1, user, sig, qm, mint, qa, fe}
+ *   hub.on('amm_pool', rec => ...);    // {pool, slot, tx, ts, buy, q1, b1, user, sig, qm, mint, q0, b0, qa, fe}
  */
 const net = require('net');
 const {EventEmitter} = require('events');
