@@ -47,10 +47,15 @@ function parseTrade(buffer) {
     let quote = {quote_mint: null};
     /** котировка — только у кривых не в SOL (их *_sol_reserves нулевые): у SOL-кривых с разделением комиссий (SellV2) на этом месте
      *  адрес конфига pfee — раньше такая сделка считалась «не в SOL» и терялась (запись в MySQL с 11.10 17:42 и фильтр quotes у ботов) */
-    if (buffer.length >= off + 76 && d.virtual_sol_reserves === 0n) {
-        const qm = buffer.subarray(off + 20, off + 52);
+    /** 1.11: перед котировкой — список (u32 длина + элементы по 34 байта: адрес и доля в bps; у монет с разделением комиссий создателя — 1 элемент,
+     *  CYMQ5z…: длина 1, доля 10000). Раньше котировка читалась с фиксированного смещения — у таких монет сумма и резервы были мусором (quote_amount ~8e18) */
+    const nShares = buffer.length >= off + 20 && d.virtual_sol_reserves === 0n ? buffer.readUInt32LE(off + 16) : 0;
+    const qo = off + 20 + 34 * (nShares <= 16 ? nShares : 0);
+    if (nShares <= 16 && buffer.length >= qo + 56 && d.virtual_sol_reserves === 0n) {
+        const qm = buffer.subarray(qo, qo + 32);
         quote = {buyback_fee_basis_points: buffer.readBigUInt64LE(off), buyback_fee: buffer.readBigUInt64LE(off + 8), quote_mint: qm.some(b => b !== 0) ? bs58.encode(qm) : null,
-            quote_amount: buffer.readBigUInt64LE(off + 52), virtual_quote_reserves: buffer.readBigUInt64LE(off + 60), real_quote_reserves: buffer.readBigUInt64LE(off + 68)};
+            quote_amount: buffer.readBigUInt64LE(qo + 32), virtual_quote_reserves: buffer.readBigUInt64LE(qo + 40), real_quote_reserves: buffer.readBigUInt64LE(qo + 48),
+            ...(nShares ? {fee_shares: nShares} : {})};
     }
     return {...quote, mint: bs58.encode(d.mint), is_buy: !!d.is_buy, user: bs58.encode(d.user), time: Number(d.timestamp), amount: d.token_amount, total: d.sol_amount,
         fee_recipient: bs58.encode(d.fee_recipient), fee_basis_points: d.fee_basis_points, fee: d.fee, creator: bs58.encode(d.creator),
