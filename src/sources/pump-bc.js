@@ -23,6 +23,7 @@ const {logger, BulkWriter} = require('../common');
 
 const PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const WSOL = 'So11111111111111111111111111111111111111112';
+const TOKEN_2022 = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 const DISC_TRADE = 'bddb7fd34ee661ee', DISC_CREATOR_CHANGE = '9ba768dcd56cf303';
 const COMPUTE_BUDGET = 'ComputeBudget111111111111111111111111111111';
 
@@ -200,6 +201,19 @@ function createPumpBc({db, write = true, publish = () => {}}) {
         const createLine = lateCreate ? 'Program data: ' + lateCreate.createData : create ? logs.find(l => l.startsWith('Program data: G3KpTd7r')) : null;
         const tokens = {};
         for (const b of [...(meta.postTokenBalances || []), ...(meta.preTokenBalances || [])]) if (b.mint && !tokens[b.mint]) tokens[b.mint] = {programId: b.programId || null, decimals: b.uiTokenAmount ? Number(b.uiTokenAmount.decimals) : null};
+        /** котировки не в SOL (1.11): feeBps — комиссия перевода Token-2022, фактически удержанная в этой транзакции (удержанное не входит в баланс счёта:
+         *  сумма изменений балансов всех счетов котировки = −удержано; доля — от самого большого списания); qbal — баланс котировки после транзакции
+         *  у участников сделок (бот берёт свой остаток после продажи без запроса к RPC) */
+        const users = new Set(swaps.map(sw => sw.user));
+        for (const qm of new Set(swaps.map(sw => sw.quote_mint).filter(m => m && m !== WSOL))) {
+            const T = tokens[qm]; if (!T) continue;
+            const pre = new Map(), post = new Map();
+            for (const b of meta.preTokenBalances || []) if (b.mint === qm) pre.set(b.accountIndex, BigInt(b.uiTokenAmount.amount));
+            for (const b of meta.postTokenBalances || []) if (b.mint === qm) { post.set(b.accountIndex, BigInt(b.uiTokenAmount.amount)); if (users.has(b.owner)) (T.qbal = T.qbal || {})[b.owner] = b.uiTokenAmount.amount; }
+            let sum = 0n, gross = 0n;
+            for (const i of new Set([...pre.keys(), ...post.keys()])) { const d = (post.get(i) || 0n) - (pre.get(i) || 0n); sum += d; if (-d > gross) gross = -d; }
+            T.feeBps = T.programId === TOKEN_2022 && gross > 0n && sum < 0n ? Math.round(Number(-sum) / Number(gross) * 1e4) : 0;
+        }
         publish('pump_bc', {sig: txSig, slot, ts: createdAt, recvTs, cuPrice: info.cuPrice, cuLimit: info.cuLimit, signers: signatures.length, tips: info.tips,
             create, tokenProgram, createData: createLine ? createLine.slice(14) : null, tokens, swaps, ...(lateCreate ? {lateCreate: true} : {})});
         if (!db || !write) return;
