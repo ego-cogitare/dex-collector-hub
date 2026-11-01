@@ -232,10 +232,10 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
      *  quote_amount − lp_fee; у *_v2 комиссии создателя и buyback остаются на счёте пула до сбора (SweepCreatorFee / SweepProtocolFee) — сверено 27.10 */
     function poolSwap(s, txIndex, meta) {
         try {
-            let q1 = null, b1 = null;
+            let q1 = null, b1 = null, btp = null;
             for (const t of meta?.postTokenBalances || []) {
                 if (t.owner !== s.pool) continue;
-                if (t.mint === s.quote_mint) q1 = BigInt(t.uiTokenAmount.amount); else if (t.mint === s.mint) b1 = BigInt(t.uiTokenAmount.amount);
+                if (t.mint === s.quote_mint) q1 = BigInt(t.uiTokenAmount.amount); else if (t.mint === s.mint) { b1 = BigInt(t.uiTokenAmount.amount); btp = t.programId || null; }
             }
             if (q1 === null || b1 === null) {
                 const q0 = BigInt(s.pool_quote_reserves), b0 = BigInt(s.pool_base_reserves), qa = BigInt(s.quote_amount), ba = BigInt(s.base_amount), lp = BigInt(s.lp_fee || 0);
@@ -244,7 +244,9 @@ async function startPumpAmm({db, write = true, publish = () => {}, publishPool =
             }
             /** qm / mint / qa / fe (29.10) — для подписки по котировке: котировка и база пула, quote_amount и комиссии сделки (lp + protocol + coin_creator); q0 / b0 — резервы пула ДО сделки (из события) */
             publishPool({pool: s.pool, slot: s.slot, tx: txIndex, ts: s.ts, buy: s.is_buy ? 1 : 0, q1: Number(q1), b1: Number(b1), user: s.user, sig: s.signature,
-                qm: s.quote_mint, mint: s.mint, q0: Number(s.pool_quote_reserves), b0: Number(s.pool_base_reserves), qa: Number(s.quote_amount), fe: Number(s.lp_fee || 0) + Number(s.protocol_fee || 0) + Number(s.coin_creator_fee || 0)});
+                qm: s.quote_mint, mint: s.mint, q0: Number(s.pool_quote_reserves), b0: Number(s.pool_base_reserves), qa: Number(s.quote_amount), fe: Number(s.lp_fee || 0) + Number(s.protocol_fee || 0) + Number(s.coin_creator_fee || 0),
+                /** cc / cb / btp (01.11) — параметры пула для своей сделки без RPC (хранилища — ATA пула): создатель монеты, монета с cashback, программа токена базы */
+                cc: s.coin_creator || null, cb: Number(s.cashback || 0) > 0 ? 1 : 0, btp});
         } catch (e) { err('amm_pool', e); }
     }
 
